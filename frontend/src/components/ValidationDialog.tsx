@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { apiErrorMessage, fillNulls, validateFile } from "../api/client";
 import type { ColumnKind, FillStrategy, ValidationReport } from "../types";
+import { useToast } from "./Toast";
 
 const MEAN_MEDIAN_KINDS = new Set<ColumnKind>(["int", "float", "date", "timestamp"]);
 
@@ -24,12 +25,12 @@ export default function ValidationDialog({
   onClose: () => void;
   onDataChanged?: () => void;
 }) {
+  const { showToast } = useToast();
   const [report, setReport] = useState<ValidationReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [strategyByColumn, setStrategyByColumn] = useState<Record<string, FillStrategy>>({});
   const [fillingColumn, setFillingColumn] = useState<string | null>(null);
-  const [fillMessage, setFillMessage] = useState<string | null>(null);
 
   const loadReport = () => {
     setLoading(true);
@@ -47,11 +48,10 @@ export default function ValidationDialog({
   const handleFill = async (column: string, kind: ColumnKind) => {
     const strategy = strategyByColumn[column] ?? strategyOptions(kind)[0].value;
     setError(null);
-    setFillMessage(null);
     setFillingColumn(column);
     try {
       const result = await fillNulls(fileId, column, strategy);
-      setFillMessage(`"${column}": filled ${result.filled_count} value(s)`);
+      showToast(`"${column}": filled ${result.filled_count} value(s)`);
       await loadReport();
       onDataChanged?.();
     } catch (err) {
@@ -66,14 +66,6 @@ export default function ValidationDialog({
       <div className="modal" style={{ width: "min(1200px, 94vw)" }} onClick={(e) => e.stopPropagation()}>
         <h2>Validate file</h2>
         {error && <div className="error-banner">{error}</div>}
-        {fillMessage && (
-          <div
-            className="error-banner"
-            style={{ background: "#173a2b", borderColor: "#1f6b41", color: "#bbf7d0" }}
-          >
-            {fillMessage}
-          </div>
-        )}
         {loading && <div style={{ color: "#9aa4b2" }}>Validating...</div>}
 
         {report && (

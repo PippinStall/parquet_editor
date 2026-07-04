@@ -2,16 +2,19 @@
 kind-specific checks (infinities for floats, invalid/empty geometries). Never
 mutates the underlying DataFrame.
 """
+
 from __future__ import annotations
 
 from typing import Any
 
 import numpy as np
 
-from .parquet_service import open_file
+from app.services.parquet_service import open_file
 
 
 def validate_file(file_id: str) -> dict[str, Any]:
+    """Return a read-only data-quality report for the given file."""
+
     entry = open_file(file_id)
     df = entry.df
     row_count = len(df)
@@ -32,7 +35,9 @@ def validate_file(file_id: str) -> dict[str, Any]:
             "name": col,
             "kind": kind,
             "null_count": null_count,
-            "null_percentage": round(null_count / row_count * 100, 2) if row_count else 0.0,
+            "null_percentage": (
+                round(null_count / row_count * 100, 2) if row_count else 0.0
+            ),
         }
 
         if kind == "float":

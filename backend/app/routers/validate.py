@@ -2,15 +2,17 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
-from ..schemas.models import ValidationReport
-from ..services.parquet_service import ParquetServiceError
-from ..services.validate_service import validate_file
+from app.schemas.models import ValidationReport
+from app.services.parquet_service import ParquetServiceError
+from app.services.validate_service import validate_file
 
 router = APIRouter(prefix="/api/files", tags=["validate"])
 
 
 @router.get("/{file_id}/validate", response_model=ValidationReport)
 def validate(file_id: str) -> dict:
+    """Validate a file based on its ID and return a validation report."""
+
     try:
         return validate_file(file_id)
     except ParquetServiceError as exc:

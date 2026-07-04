@@ -4,6 +4,7 @@ match, or — when key columns are given — by grouping on those keys and
 coalescing each remaining column to its first non-null value across the
 group (so a row with a value "wins" over a matching row where it's null).
 """
+
 from __future__ import annotations
 
 import tempfile
@@ -11,11 +12,14 @@ from pathlib import Path
 
 import pandas as pd
 
-from ..helpers.file_store import FileRecord, store
-from .parquet_service import ParquetServiceError, open_file
+from app.helpers.file_store import FileRecord, store
+from app.services.parquet_service import ParquetServiceError, open_file
 
 
 def _coalesce_by_key(df: pd.DataFrame, key_columns: list[str]) -> pd.DataFrame:
+    """Coalesce rows by key columns, preferring non-null values over nulls in
+    each remaining column. Ties are broken by input row order (earlier rows win)."""
+
     for col in key_columns:
         if col not in df.columns:
             raise ParquetServiceError(f"Unknown dedup_by column: {col}")
@@ -26,12 +30,16 @@ def _coalesce_by_key(df: pd.DataFrame, key_columns: list[str]) -> pd.DataFrame:
     # (rows from earlier files/rows win when both are non-null but differ).
     ordered_columns = list(df.columns)
     result = df.groupby(key_columns, dropna=False, as_index=False).first()
+
     return result[ordered_columns]
 
 
 def merge_files(
     file_ids: list[str], output_filename: str, dedup_by: list[str] | None = None
 ) -> FileRecord:
+    """Merge several open files into one new file: columns are unioned (missing
+    values become null)."""
+
     if len(file_ids) < 2:
         raise ParquetServiceError("Select at least 2 files to merge")
     if not output_filename.strip():

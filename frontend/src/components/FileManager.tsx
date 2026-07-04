@@ -7,6 +7,7 @@ import {
   uploadFile,
 } from "../api/client";
 import type { FileInfo } from "../types";
+import CreateDatasetDialog from "./CreateDatasetDialog";
 import MergeDialog from "./MergeDialog";
 
 function formatSize(bytes: number): string {
@@ -26,6 +27,7 @@ export default function FileManager({
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [showMerge, setShowMerge] = useState(false);
+  const [showCreateDataset, setShowCreateDataset] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(async () => {
@@ -115,6 +117,9 @@ export default function FileManager({
       <div className="toolbar">
         <span className="badge">files selected: {selected.size}</span>
         <div className="spacer" />
+        <button className="secondary" onClick={() => setShowCreateDataset(true)}>
+          Create dataset
+        </button>
         <button
           className="secondary"
           disabled={selected.size < 2}
@@ -185,6 +190,16 @@ export default function FileManager({
           onDone={() => {
             setShowMerge(false);
             setSelected(new Set());
+            refresh();
+          }}
+        />
+      )}
+
+      {showCreateDataset && (
+        <CreateDatasetDialog
+          onClose={() => setShowCreateDataset(false)}
+          onDone={() => {
+            setShowCreateDataset(false);
             refresh();
           }}
         />

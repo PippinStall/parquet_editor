@@ -6,6 +6,8 @@ from pydantic import BaseModel
 
 
 class FileInfo(BaseModel):
+    """Information about a file."""
+
     file_id: str
     filename: str
     size_bytes: int
@@ -15,6 +17,8 @@ class FileInfo(BaseModel):
 
 
 class ColumnInfo(BaseModel):
+    """Information about a column."""
+
     name: str
     dtype: str
     kind: str
@@ -22,6 +26,8 @@ class ColumnInfo(BaseModel):
 
 
 class SchemaResponse(BaseModel):
+    """Response containing schema information for a file."""
+
     file_id: str
     is_geo: bool
     crs: str | None = None
@@ -30,6 +36,8 @@ class SchemaResponse(BaseModel):
 
 
 class RowsResponse(BaseModel):
+    """Response containing rows of data for a file."""
+
     page: int
     page_size: int
     total_rows: int
@@ -37,38 +45,52 @@ class RowsResponse(BaseModel):
 
 
 class CellEdit(BaseModel):
+    """Represents an edit to a single cell in a file."""
+
     row_index: int
     column: str
     value: Any = None
 
 
 class GenerateColumnSpec(BaseModel):
+    """Specification for generating a new column."""
+
     name: str
     kind: str
     params: dict[str, Any] = {}
 
 
 class GenerateTarget(BaseModel):
+    """Specifies the target rows for a generate operation."""
+
     scope: Literal["all", "selected"] = "all"
     row_indices: list[int] = []
 
 
 class GenerateRequest(BaseModel):
+    """Request to generate new columns."""
+
     target: GenerateTarget = GenerateTarget()
     columns: list[GenerateColumnSpec]
 
 
 class SaveRequest(BaseModel):
+    """Request to save a file."""
+
     legacy_int96_timestamps: bool = False
 
 
 class SaveResponse(BaseModel):
+    """Response after saving a file."""
+
     file_id: str
     saved: bool
     size_bytes: int
 
 
 class ColumnValidation(BaseModel):
+    """Validation information for a column."""
+
     name: str
     kind: str
     null_count: int
@@ -79,6 +101,8 @@ class ColumnValidation(BaseModel):
 
 
 class ValidationReport(BaseModel):
+    """Validation report for a file."""
+
     file_id: str
     row_count: int
     duplicate_rows: int
@@ -86,40 +110,85 @@ class ValidationReport(BaseModel):
 
 
 class MergeRequest(BaseModel):
+    """Request to merge multiple files."""
+
     file_ids: list[str]
     output_filename: str
     dedup_by: list[str] = []
 
 
 class AddColumnRequest(BaseModel):
+    """Request to add a new column to a file."""
+
     name: str
     kind: str
     default: Any = None
 
 
 class FillNullsRequest(BaseModel):
+    """Request to fill null values in a column."""
+
     strategy: str
 
 
 class FillNullsResult(BaseModel):
+    """Result of filling null values in a column."""
+
     column: str
     strategy: str
     filled_count: int
 
 
 class FilterSpec(BaseModel):
+    """Specification for filtering rows in a file."""
+
     column: str
     op: str
     value: Any = None
 
 
 class GeometryFeature(BaseModel):
+    """Represents a geometry feature in a file."""
+
     row_index: int
     wkt: str
 
 
 class GeometriesResponse(BaseModel):
+    """Response containing geometry features for a file."""
+
     geometry_column: str
     total: int
     truncated: bool
     features: list[GeometryFeature]
+
+
+class BBox(BaseModel):
+    """Represents a bounding box."""
+
+    min_lon: float
+    min_lat: float
+    max_lon: float
+    max_lat: float
+
+
+class CreateDatasetColumn(BaseModel):
+    """Represents a column in a dataset."""
+
+    name: str
+    kind: str
+
+
+class CreateDatasetRequest(BaseModel):
+    """Request to create a new dataset."""
+
+    output_filename: str
+    row_count: int
+    columns: list[CreateDatasetColumn]
+
+
+class CreateDatasetResult(BaseModel):
+    """Result of creating a new dataset."""
+
+    file: FileInfo
+    skipped_columns: int

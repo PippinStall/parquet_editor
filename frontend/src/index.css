@@ -128,6 +128,44 @@ table.file-list th, table.file-list td {
   color: #9aa4b2;
 }
 
+.dropdown {
+  position: relative;
+  display: inline-block;
+}
+
+.dropdown-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 1100;
+  min-width: 160px;
+  background: #171a21;
+  border: 1px solid #262b35;
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.dropdown-menu a,
+.dropdown-menu button.menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 5px;
+  font-size: 13px;
+  color: #e6e8eb;
+  text-decoration: none;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.dropdown-menu a:hover,
+.dropdown-menu button.menu-item:hover {
+  background: #262b35;
+}
+
 .grid-wrapper {
   overflow: auto;
   border: 1px solid #262b35;
@@ -234,8 +272,58 @@ table.data-grid td input, table.data-grid td select, table.data-grid td textarea
   font-size: 13px;
 }
 
+.toast-stack {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 2000;
+  pointer-events: none;
+}
+
+.toast {
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  max-width: 360px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  animation: toast-in 0.15s ease-out;
+  pointer-events: auto;
+}
+
+.toast-success {
+  background: #173a2b;
+  border: 1px solid #1f6b41;
+  color: #bbf7d0;
+}
+
+.toast-error {
+  background: #3f1d1d;
+  border: 1px solid #7f1d1d;
+  color: #fecaca;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .leaflet-map {
   height: 380px;
   border-radius: 8px;
   margin-top: 10px;
+  /* Leaflet's own panes/controls use z-index up to 1000, which would
+     otherwise compete directly with page overlays like .dropdown-menu
+     (position:relative alone doesn't create a stacking context, so those
+     z-indexes would leak into the page's root stacking context). Isolating
+     contains all of Leaflet's internal stacking inside this element. */
+  isolation: isolate;
 }

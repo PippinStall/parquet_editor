@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import columns, data, files, generate, merge, validate
+from app.routers import columns, create_dataset, data, files, generate, merge, validate
 
 app = FastAPI(title="Parquet/GeoParquet Editor")
 
@@ -21,6 +21,7 @@ app.include_router(generate.router)
 app.include_router(validate.router)
 app.include_router(merge.router)
 app.include_router(columns.router)
+app.include_router(create_dataset.router)
 
 
 @app.get("/api/health")

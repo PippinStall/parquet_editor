@@ -1,6 +1,9 @@
 import axios from "axios";
 import type {
+  BBox,
   ColumnKind,
+  CreateDatasetColumn,
+  CreateDatasetResult,
   ExportFormat,
   FileInfo,
   FillNullsResult,
@@ -159,6 +162,28 @@ export async function deleteColumn(
 
 export function exportFileUrl(fileId: string, format: ExportFormat): string {
   return `/api/files/${fileId}/export?format=${format}`;
+}
+
+export function exportSchemaUrl(fileId: string): string {
+  return `/api/files/${fileId}/schema/export`;
+}
+
+export async function getBbox(fileId: string): Promise<BBox> {
+  const { data } = await api.get<BBox>(`/files/${fileId}/bbox`);
+  return data;
+}
+
+export async function createDataset(
+  outputFilename: string,
+  rowCount: number,
+  columns: CreateDatasetColumn[],
+): Promise<CreateDatasetResult> {
+  const { data } = await api.post<CreateDatasetResult>("/files/create", {
+    output_filename: outputFilename,
+    row_count: rowCount,
+    columns,
+  });
+  return data;
 }
 
 export async function getGeometries(

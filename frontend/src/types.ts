@@ -117,3 +117,21 @@ export interface GeometriesResult {
 }
 
 export type ExportFormat = "json" | "csv" | "parquet";
+
+export type CreatableColumnKind = "int" | "float" | "string" | "bool" | "date" | "timestamp";
+
+export interface CreateDatasetColumn {
+  name: string;
+  kind: CreatableColumnKind;
+}
+
+export interface CreateDatasetRequest {
+  output_filename: string;
+  row_count: number;
+  columns: CreateDatasetColumn[];
+}
+
+export interface CreateDatasetResult {
+  file: FileInfo;
+  skipped_columns: number;
+}

@@ -16,6 +16,8 @@ SEP = "__"
 
 @dataclass
 class FileRecord:
+    """A record of a file in the store."""
+
     file_id: str
     filename: str
     path: Path

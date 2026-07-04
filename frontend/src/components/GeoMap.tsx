@@ -5,7 +5,7 @@ import "./leafletIconFix";
 import L from "leaflet";
 import "leaflet-draw";
 import { useEffect, useMemo } from "react";
-import { GeoJSON, MapContainer, TileLayer, useMap } from "react-leaflet";
+import { GeoJSON, MapContainer, Rectangle, TileLayer, useMap } from "react-leaflet";
 import * as wellknown from "wellknown";
 import type { BBox, GeoFeature } from "../types";
 
@@ -59,25 +59,31 @@ function DrawControl({ onBBoxDrawn }: { onBBoxDrawn: (bbox: BBox) => void }) {
   return null;
 }
 
-function FitToData({ geojson }: { geojson: GeoJSON.FeatureCollection }) {
+function FitToData({ geojson, bbox }: { geojson: GeoJSON.FeatureCollection; bbox?: BBox | null }) {
   const map = useMap();
   useEffect(() => {
-    if (geojson.features.length === 0) return;
-    const layer = L.geoJSON(geojson);
-    const bounds = layer.getBounds();
+    const bounds = L.geoJSON(geojson).getBounds();
+    if (bbox) {
+      bounds.extend([
+        [bbox.min_lat, bbox.min_lon],
+        [bbox.max_lat, bbox.max_lon],
+      ]);
+    }
     if (bounds.isValid()) {
       map.fitBounds(bounds, { padding: [20, 20], maxZoom: 12 });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [geojson]);
+  }, [geojson, bbox]);
   return null;
 }
 
 export default function GeoMap({
   features: geoFeatures,
+  bbox,
   onBBoxDrawn,
 }: {
   features: GeoFeature[];
+  bbox?: BBox | null;
   onBBoxDrawn?: (bbox: BBox) => void;
 }) {
   const featureCollection = useMemo<GeoJSON.FeatureCollection>(() => {
@@ -120,7 +126,16 @@ export default function GeoMap({
           }}
         />
       )}
-      <FitToData geojson={featureCollection} />
+      {bbox && (
+        <Rectangle
+          bounds={[
+            [bbox.min_lat, bbox.min_lon],
+            [bbox.max_lat, bbox.max_lon],
+          ]}
+          pathOptions={{ color: "#e11d48", weight: 2, fill: false }}
+        />
+      )}
+      <FitToData geojson={featureCollection} bbox={bbox} />
       {onBBoxDrawn && <DrawControl onBBoxDrawn={onBBoxDrawn} />}
     </MapContainer>
   );

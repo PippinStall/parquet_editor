@@ -103,6 +103,23 @@ npm run dev
     `=`/contains/starts-with for strings); clicking a column header sorts by it (clicking
     again reverses direction). All of this works on top of pagination and can be combined
     at the same time.
+11. **Dataset bounding box on the map** — for geoparquet files, a "Show dataset bbox"
+    checkbox next to the map selector computes the bounding box of the whole geometry
+    column and draws it as a rectangle on the map (independent of the map scope, so it
+    works even with the map otherwise hidden). The bbox is cached on the server per open
+    file so repeated toggles don't rescan the column — the cache is invalidated
+    automatically whenever the geometry column is edited, regenerated, or deleted.
+12. **Export schema as JSON** — the "Schema (JSON)" toolbar button downloads the file's
+    schema (column names, dtypes, kinds, CRS, row count) as a JSON file.
+13. **Create a new dataset** — the "Create dataset" button on the file list opens a
+    dialog to scaffold a brand-new parquet file: define columns (name + type) by hand, or
+    load a schema JSON file (e.g. one produced by "Schema (JSON)" above — only `name`/
+    `kind` per column are read, so it round-trips cleanly), plus a row count. The file is
+    created with placeholder/randomized values per column's type (ints/floats get a
+    default range, strings get `columnname_i` placeholders, booleans are random,
+    dates/timestamps are randomized over the last year) — use "Generate values" afterwards
+    for real control over the distribution. Geometry columns aren't creatable this way and
+    are skipped (reported in the confirmation).
 
 ## Current limitations
 

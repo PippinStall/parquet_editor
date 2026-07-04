@@ -9,10 +9,10 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
-
-from ..helpers.column_types import KIND_GEOMETRY, column_kind
-from ..helpers.file_store import FileRecord, store
-from ..helpers.session_cache import OpenFile, cache
+import geopandas as gpd
+from app.helpers.column_types import KIND_GEOMETRY, column_kind
+from app.helpers.file_store import FileRecord, store
+from app.helpers.session_cache import OpenFile, cache
 
 RESERVED_COLUMN_NAMES = {"__row_index__"}
 
@@ -26,34 +26,55 @@ _KIND_TO_DTYPE = {
 }
 
 
+_FILTER_OPS_NUMERIC = {"eq", "ne", "lt", "lte", "gt", "gte"}
+_FILTER_OPS_STRING = {"eq", "contains", "startswith"}
+_FILTER_OPS_BOOL = {"eq"}
+
+
+FILL_STRATEGIES = {"mean", "median", "mode", "random"}
+_MEAN_MEDIAN_KINDS = {"int", "float", "date", "timestamp"}
+
+
+EXPORT_FORMATS = {"json", "csv", "parquet"}
+
+
 class ParquetServiceError(ValueError):
     pass
 
 
 def _is_geoparquet(path: Path) -> bool:
+    """Return True if the given parquet file is a GeoParquet file, False otherwise."""
+
     try:
         schema = pq.read_schema(path)
     except Exception as exc:  # pragma: no cover - surfaced to the API layer
         raise ParquetServiceError(f"Failed to read parquet schema: {exc}") from exc
+
     metadata = schema.metadata or {}
+
     return b"geo" in metadata
 
 
 def _load_dataframe(path: Path) -> tuple[pd.DataFrame, bool, str | None, str | None]:
+    """Load a parquet file into a DataFrame, returning the DataFrame,
+    whether it's GeoParquet, the geometry column name (if any), and the CRS (if any).
+    """
+
     is_geo = _is_geoparquet(path)
     if is_geo:
-        import geopandas as gpd
-
         gdf = gpd.read_parquet(path)
         geometry_column = gdf.geometry.name if hasattr(gdf, "geometry") else None
         crs = str(gdf.crs) if gdf.crs is not None else None
         return gdf, True, geometry_column, crs
 
     df = pd.read_parquet(path, engine="pyarrow")
+
     return df, False, None, None
 
 
 def open_file(file_id: str) -> OpenFile:
+    """Return an OpenFile session for the given file_id, loading the underlying"""
+
     entry = cache.get(file_id)
     if entry is not None:
         return entry
@@ -73,10 +94,13 @@ def open_file(file_id: str) -> OpenFile:
         df=df, is_geo=is_geo, geometry_column=geometry_column, crs=crs, kinds=kinds
     )
     cache.set(file_id, entry)
+
     return entry
 
 
 def get_schema(file_id: str) -> dict[str, Any]:
+    """Return a read-only schema report for the given file."""
+
     entry = open_file(file_id)
     columns = [
         {
@@ -87,6 +111,7 @@ def get_schema(file_id: str) -> dict[str, Any]:
         }
         for col in entry.df.columns
     ]
+
     return {
         "file_id": file_id,
         "is_geo": entry.is_geo,
@@ -97,6 +122,8 @@ def get_schema(file_id: str) -> dict[str, Any]:
 
 
 def _json_safe(value: Any) -> Any:
+    """Return a JSON-safe representation of a value."""
+
     if value is None:
         return None
     if isinstance(value, float) and math.isnan(value):
@@ -127,17 +154,15 @@ def _json_safe(value: Any) -> Any:
         return value
     if pd.isna(value):
         return None
+
     return value
-
-
-_FILTER_OPS_NUMERIC = {"eq", "ne", "lt", "lte", "gt", "gte"}
-_FILTER_OPS_STRING = {"eq", "contains", "startswith"}
-_FILTER_OPS_BOOL = {"eq"}
 
 
 def _apply_filters(
     df: pd.DataFrame, kinds: dict[str, str], filters: list[dict[str, Any]]
 ) -> pd.Series:
+    """Return a boolean mask for the given DataFrame, applying the given filters."""
+
     mask = pd.Series(True, index=df.index)
     for f in filters:
         column, op, value = f.get("column"), f.get("op"), f.get("value")
@@ -149,7 +174,10 @@ def _apply_filters(
 
         if kind in ("int", "float", "date", "timestamp"):
             if op not in _FILTER_OPS_NUMERIC:
-                raise ParquetServiceError(f"Unsupported filter op '{op}' for kind '{kind}'")
+                raise ParquetServiceError(
+                    f"Unsupported filter op '{op}' for kind '{kind}'"
+                )
+
             casted = _cast_value(kind, value)
             if op == "eq":
                 cond = series == casted
@@ -165,7 +193,9 @@ def _apply_filters(
                 cond = series >= casted
         elif kind == "string":
             if op not in _FILTER_OPS_STRING:
-                raise ParquetServiceError(f"Unsupported filter op '{op}' for kind '{kind}'")
+                raise ParquetServiceError(
+                    f"Unsupported filter op '{op}' for kind '{kind}'"
+                )
             str_series = series.astype(str)
             text = "" if value is None else str(value)
             if op == "eq":
@@ -176,24 +206,58 @@ def _apply_filters(
                 cond = str_series.str.startswith(text, na=False)
         elif kind == "bool":
             if op not in _FILTER_OPS_BOOL:
-                raise ParquetServiceError(f"Unsupported filter op '{op}' for kind '{kind}'")
+                raise ParquetServiceError(
+                    f"Unsupported filter op '{op}' for kind '{kind}'"
+                )
             cond = series == _cast_value("bool", value)
         else:
-            raise ParquetServiceError(f"Column '{column}' of kind '{kind}' is not filterable")
+            raise ParquetServiceError(
+                f"Column '{column}' of kind '{kind}' is not filterable"
+            )
 
         mask &= cond.fillna(False)
+
     return mask
 
 
-def _apply_search(df: pd.DataFrame, search: str) -> pd.Series:
-    lowered = search.lower()
-    mask = pd.Series(False, index=df.index)
-    for col in df.columns:
-        try:
-            mask = mask | df[col].astype(str).str.lower().str.contains(lowered, na=False, regex=False)
-        except (TypeError, ValueError):
-            continue
-    return mask
+def _get_search_blob(entry: OpenFile) -> pd.Series:
+    """Lowercased "all columns joined" text per row, cached on the open-file
+    session (see `OpenFile.search_blob`) so free-text search doesn't
+    re-stringify every column on every keystroke — for a wide table (this
+    was measured at 8+ seconds per search on a real 45k-row/430-column
+    geoparquet file before caching). The geometry column is skipped: WKT
+    text search is rarely useful and shapely->str is one of the slower
+    conversions here. The cache is invalidated wherever any cell/column can
+    be mutated (edit_cell, generate_values, add_column, delete_column,
+    fill_nulls).
+    """
+    if entry.search_blob is None:
+        df = entry.df
+        parts = [
+            df[col].astype(str).str.lower()
+            for col in df.columns
+            if entry.kinds.get(col) != "geometry"
+        ]
+        if parts:
+            # A single str.cat() call over all parts is a linear-time,
+            # vectorized join; building the same result via a Python loop of
+            # `blob = blob + " " + part` is quadratic (each `+` copies the
+            # whole, ever-growing column) and was the actual bottleneck.
+            # na_rep="" is required: without it, str.cat's default behavior
+            # makes the *entire row's* blob NaN if *any* one of the ~430
+            # joined columns is missing at that row — which, empirically,
+            # silently broke search for most/all rows in real data.
+            entry.search_blob = parts[0].str.cat(parts[1:], sep=" ", na_rep="")
+        else:
+            entry.search_blob = pd.Series("", index=df.index)
+    return entry.search_blob
+
+
+def _apply_search(entry: OpenFile, search: str) -> pd.Series:
+    """Return a boolean mask of rows whose search blob contains `search`."""
+
+    blob = _get_search_blob(entry)
+    return blob.str.contains(search.lower(), na=False, regex=False)
 
 
 def get_rows(
@@ -205,6 +269,8 @@ def get_rows(
     search: str | None = None,
     filters: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    """Return a paginated, optionally filtered and sorted view of the rows in the given file."""
+
     entry = open_file(file_id)
     df = entry.df
 
@@ -212,7 +278,7 @@ def get_rows(
     if filters:
         mask &= _apply_filters(df, entry.kinds, filters)
     if search:
-        mask &= _apply_search(df, search)
+        mask &= _apply_search(entry, search)
 
     filtered_index = df.index[mask]
 
@@ -249,6 +315,8 @@ def get_rows(
 
 
 def _cast_value(kind: str, raw_value: Any) -> Any:
+    """Cast a raw value to the given column kind, raising ParquetServiceError if invalid."""
+
     if raw_value is None:
         return None
 
@@ -277,6 +345,8 @@ def _cast_value(kind: str, raw_value: Any) -> Any:
 
 
 def edit_cell(file_id: str, row_index: int, column: str, value: Any) -> None:
+    """Edit a single cell in the given file, casting the value to the column's kind."""
+
     entry = open_file(file_id)
     if column not in entry.df.columns:
         raise ParquetServiceError(f"Unknown column: {column}")
@@ -297,9 +367,14 @@ def edit_cell(file_id: str, row_index: int, column: str, value: Any) -> None:
             pass
     entry.df.loc[single.index, column] = single
     entry.dirty = True
+    entry.search_blob = None
+    if column == entry.geometry_column:
+        entry.bbox = None
 
 
 def add_column(file_id: str, name: str, kind: str, default: Any = None) -> None:
+    """Add a new column to the given file, with the given kind and optional default value."""
+
     entry = open_file(file_id)
     if name in RESERVED_COLUMN_NAMES:
         raise ParquetServiceError(f"'{name}' is a reserved column name")
@@ -312,7 +387,9 @@ def add_column(file_id: str, name: str, kind: str, default: Any = None) -> None:
                 "Adding a geometry column is not supported — geometry columns "
                 "require a full geo-conversion of the file"
             )
-        raise ParquetServiceError(f"Unsupported column kind for add_column: {kind} (supported: {supported})")
+        raise ParquetServiceError(
+            f"Unsupported column kind for add_column: {kind} (supported: {supported})"
+        )
 
     n = len(entry.df)
     value = _cast_value(kind, default) if default is not None else None
@@ -327,9 +404,12 @@ def add_column(file_id: str, name: str, kind: str, default: Any = None) -> None:
     entry.df[name] = series
     entry.kinds[name] = kind
     entry.dirty = True
+    entry.search_blob = None
 
 
 def delete_column(file_id: str, name: str) -> None:
+    """Delete a column from the given file, updating the geometry column and bbox if needed."""
+
     entry = open_file(file_id)
     if name not in entry.df.columns:
         raise ParquetServiceError(f"Unknown column: {name}")
@@ -338,11 +418,9 @@ def delete_column(file_id: str, name: str) -> None:
     entry.kinds.pop(name, None)
     if entry.geometry_column == name:
         entry.geometry_column = None
+        entry.bbox = None
     entry.dirty = True
-
-
-FILL_STRATEGIES = {"mean", "median", "mode", "random"}
-_MEAN_MEDIAN_KINDS = {"int", "float", "date", "timestamp"}
+    entry.search_blob = None
 
 
 def fill_nulls(file_id: str, column: str, strategy: str) -> int:
@@ -352,6 +430,7 @@ def fill_nulls(file_id: str, column: str, strategy: str) -> int:
     preserving the column's own distribution). Returns how many cells were
     filled.
     """
+
     entry = open_file(file_id)
     if column not in entry.df.columns:
         raise ParquetServiceError(f"Unknown column: {column}")
@@ -391,7 +470,9 @@ def fill_nulls(file_id: str, column: str, strategy: str) -> int:
         fill_value = non_null.mode().iloc[0]
         fill_values = [fill_value] * n_missing
     else:  # random: bootstrap-sample from the column's own existing values
-        fill_values = list(np.random.choice(non_null.to_numpy(dtype=object), size=n_missing))
+        fill_values = list(
+            np.random.choice(non_null.to_numpy(dtype=object), size=n_missing)
+        )
 
     idx = series.index[null_mask]
     fill_series = pd.Series(fill_values, index=idx)
@@ -401,16 +482,24 @@ def fill_nulls(file_id: str, column: str, strategy: str) -> int:
         pass
     entry.df.loc[idx, column] = fill_series
     entry.dirty = True
+    entry.search_blob = None
+
     return n_missing
 
 
 def save_file(file_id: str, legacy_int96_timestamps: bool = False) -> FileRecord:
+    """Save the given file back to its original path, using the legacy int96"""
+
     entry = open_file(file_id)
     record = store.get(file_id)
     if record is None:
         raise ParquetServiceError(f"Unknown file_id: {file_id}")
 
-    can_write_geo = entry.is_geo and entry.geometry_column and entry.geometry_column in entry.df.columns
+    can_write_geo = (
+        entry.is_geo
+        and entry.geometry_column
+        and entry.geometry_column in entry.df.columns
+    )
     if can_write_geo:
         entry.df.to_parquet(record.path, engine="pyarrow", compression="snappy")
     else:
@@ -422,13 +511,13 @@ def save_file(file_id: str, legacy_int96_timestamps: bool = False) -> FileRecord
         )
 
     entry.dirty = False
+
     return record
 
 
-EXPORT_FORMATS = {"json", "csv", "parquet"}
-
-
 def export_file(file_id: str, fmt: str) -> tuple[bytes, str, str]:
+    """Export the given file in the requested format (json, csv, or parquet)."""
+
     if fmt not in EXPORT_FORMATS:
         raise ParquetServiceError(f"Unsupported export format: {fmt}")
 
@@ -455,14 +544,56 @@ def export_file(file_id: str, fmt: str) -> tuple[bytes, str, str]:
 
     buf = io.BytesIO()
     export_df.to_parquet(buf, engine="pyarrow", compression="snappy")
+
     return buf.getvalue(), "application/octet-stream", f"{base_name}.parquet"
+
+
+def get_bbox(file_id: str) -> dict[str, float]:
+    """Bounding box of the geometry column, cached on the open-file session
+    (see `OpenFile.bbox`) so repeated requests don't rescan the whole column.
+    The cache is invalidated wherever the geometry column can be mutated
+    (edit_cell, generate_values, delete_column).
+    """
+
+    entry = open_file(file_id)
+    if (
+        not entry.is_geo
+        or not entry.geometry_column
+        or entry.geometry_column not in entry.df.columns
+    ):
+        raise ParquetServiceError("File has no geometry column")
+
+    if entry.bbox is None:
+        geo_series = entry.df[entry.geometry_column]
+        valid = geo_series[geo_series.notna() & ~geo_series.is_empty]
+        if len(valid) == 0:
+            raise ParquetServiceError("No geometries to compute a bounding box from")
+        min_lon, min_lat, max_lon, max_lat = valid.total_bounds
+        entry.bbox = (float(min_lon), float(min_lat), float(max_lon), float(max_lat))
+
+    min_lon, min_lat, max_lon, max_lat = entry.bbox
+
+    return {
+        "min_lon": min_lon,
+        "min_lat": min_lat,
+        "max_lon": max_lon,
+        "max_lat": max_lat,
+    }
 
 
 def get_geometries(
     file_id: str, row_indices: list[int] | None, limit: int = 5000
 ) -> dict[str, Any]:
+    """Return a list of geometries from the given file, optionally filtered to the given row indices,
+    and truncated to the given limit. Each geometry is returned as a WKT string with its row index.
+    """
+
     entry = open_file(file_id)
-    if not entry.is_geo or not entry.geometry_column or entry.geometry_column not in entry.df.columns:
+    if (
+        not entry.is_geo
+        or not entry.geometry_column
+        or entry.geometry_column not in entry.df.columns
+    ):
         raise ParquetServiceError("File has no geometry column")
 
     col = entry.geometry_column

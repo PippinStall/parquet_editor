@@ -8,9 +8,9 @@ import pyarrow.parquet as pq
 from fastapi import APIRouter, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
-from ..helpers.file_store import store
-from ..schemas.models import FileInfo
-from ..helpers.session_cache import cache
+from app.helpers.file_store import store
+from app.schemas.models import FileInfo
+from app.helpers.session_cache import cache
 
 router = APIRouter(prefix="/api/files", tags=["files"])
 

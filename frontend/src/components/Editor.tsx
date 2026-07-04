@@ -4,6 +4,8 @@ import {
   deleteColumn,
   downloadFileUrl,
   exportFileUrl,
+  exportSchemaUrl,
+  getBbox,
   getGeometries,
   getRows,
   getSchema,
@@ -11,7 +13,7 @@ import {
   saveFile,
 } from "../api/client";
 import type {
-  ExportFormat,
+  BBox,
   FileInfo,
   FilterSpec,
   GeoFeature,
@@ -21,9 +23,11 @@ import type {
 } from "../types";
 import AddColumnDialog from "./AddColumnDialog";
 import DataGrid from "./DataGrid";
+import DropdownMenu from "./DropdownMenu";
 import FilterDialog from "./FilterDialog";
 import GenerateDialog from "./GenerateDialog";
 import GeoMap from "./GeoMap";
+import { useToast } from "./Toast";
 import ValidationDialog from "./ValidationDialog";
 
 const PAGE_SIZE = 50;
@@ -49,7 +53,7 @@ export default function Editor({
   const [totalRows, setTotalRows] = useState(file.row_count ?? 0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
+  const { showToast } = useToast();
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [showGenerate, setShowGenerate] = useState(false);
   const [showValidation, setShowValidation] = useState(false);
@@ -67,6 +71,13 @@ export default function Editor({
   const [mapFeatures, setMapFeatures] = useState<GeoFeature[]>([]);
   const [mapLoading, setMapLoading] = useState(false);
   const [mapTruncated, setMapTruncated] = useState(false);
+
+  const [showBbox, setShowBbox] = useState(false);
+  const [datasetBbox, setDatasetBbox] = useState<BBox | null>(null);
+  const [bboxLoading, setBboxLoading] = useState(false);
+
+  const [hiddenColumns, setHiddenColumns] = useState<Set<string>>(new Set());
+  const [columnFilterText, setColumnFilterText] = useState("");
 
   // Debounce the free-text search box so we don't re-query on every keystroke.
   useEffect(() => {
@@ -145,6 +156,24 @@ export default function Editor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapScope, geometryColumn, file.file_id, rows, selected]);
 
+  const loadBbox = useCallback(async () => {
+    if (!geometryColumn) return;
+    setBboxLoading(true);
+    try {
+      setDatasetBbox(await getBbox(file.file_id));
+    } catch (err) {
+      setError(apiErrorMessage(err));
+      setDatasetBbox(null);
+    } finally {
+      setBboxLoading(false);
+    }
+  }, [file.file_id, geometryColumn]);
+
+  useEffect(() => {
+    if (showBbox) loadBbox();
+    else setDatasetBbox(null);
+  }, [showBbox, loadBbox]);
+
   const handleCellCommit = async (rowIndex: number, column: string, value: unknown) => {
     const prevRows = rows;
     setRows((rs) =>
@@ -152,6 +181,7 @@ export default function Editor({
     );
     try {
       await patchCell(file.file_id, rowIndex, column, value);
+      if (showBbox && column === geometryColumn) loadBbox();
     } catch (err) {
       setError(apiErrorMessage(err));
       setRows(prevRows);
@@ -181,10 +211,9 @@ export default function Editor({
   const handleSave = async () => {
     setSaving(true);
     setError(null);
-    setMessage(null);
     try {
       await saveFile(file.file_id);
-      setMessage("File saved to disk.");
+      showToast("File saved to disk.");
     } catch (err) {
       setError(apiErrorMessage(err));
     } finally {
@@ -210,6 +239,12 @@ export default function Editor({
     try {
       await deleteColumn(file.file_id, column);
       if (sortBy === column) setSortBy(undefined);
+      setHiddenColumns((prev) => {
+        if (!prev.has(column)) return prev;
+        const next = new Set(prev);
+        next.delete(column);
+        return next;
+      });
       await loadSchema();
       await loadRows();
     } catch (err) {
@@ -217,9 +252,16 @@ export default function Editor({
     }
   };
 
-  const handleExport = (format: ExportFormat) => {
-    window.open(exportFileUrl(file.file_id, format), "_blank");
+  const toggleColumnVisibility = (column: string) => {
+    setHiddenColumns((prev) => {
+      const next = new Set(prev);
+      if (next.has(column)) next.delete(column);
+      else next.add(column);
+      return next;
+    });
   };
+
+  const visibleColumns = schema?.columns.filter((c) => !hiddenColumns.has(c.name)) ?? [];
 
   return (
     <div>
@@ -236,79 +278,131 @@ export default function Editor({
         {filters.length > 0 && (
           <span className="badge">filters: {filters.length}</span>
         )}
+        {hiddenColumns.size > 0 && (
+          <span className="badge">columns hidden: {hiddenColumns.size}</span>
+        )}
         <div className="spacer" />
+        {schema && (
+          <DropdownMenu label="Columns">
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, width: 300, padding: "2px 4px" }}>
+              <input
+                placeholder="Filter columns..."
+                value={columnFilterText}
+                onChange={(e) => setColumnFilterText(e.target.value)}
+                autoFocus
+              />
+              <div style={{ display: "flex", gap: 6 }}>
+                <button className="secondary" style={{ flex: 1 }} onClick={() => setHiddenColumns(new Set())}>
+                  Show all
+                </button>
+                <button
+                  className="secondary"
+                  style={{ flex: 1 }}
+                  onClick={() => setHiddenColumns(new Set(schema.columns.map((c) => c.name)))}
+                >
+                  Hide all
+                </button>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 2, maxHeight: 280, overflowY: "auto" }}>
+                {schema.columns
+                  .filter((c) => c.name.toLowerCase().includes(columnFilterText.toLowerCase()))
+                  .map((c) => (
+                    <label
+                      key={c.name}
+                      style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 6px" }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={!hiddenColumns.has(c.name)}
+                        onChange={() => toggleColumnVisibility(c.name)}
+                      />
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {c.name}
+                      </span>
+                    </label>
+                  ))}
+              </div>
+            </div>
+          </DropdownMenu>
+        )}
         <input
           placeholder="Search all columns..."
           value={searchInput}
           onChange={(e) => setSearchInput(e.target.value)}
-          style={{ minWidth: 220 }}
+          style={{ minWidth: 320 }}
         />
-        <button className="secondary" onClick={() => setShowFilters(true)}>
-          Filters
-        </button>
-        <button className="secondary" onClick={() => setShowValidation(true)}>
-          Validate file
-        </button>
-        <button className="secondary" onClick={() => setShowAddColumn(true)}>
-          Add column
-        </button>
-        <button className="secondary" onClick={() => setShowGenerate(true)}>
-          Generate values
+        <button className="secondary" onClick={() => setShowFilters(true) }>
+          Filter
         </button>
       </div>
 
       <div className="toolbar">
         {geometryColumn && (
           <>
-            <span className="field" style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-              Map:
-              <select
-                value={mapScope ?? ""}
-                onChange={(e) => setMapScope((e.target.value || null) as MapScope | null)}
-              >
-                <option value="">Hidden</option>
-                <option value="page">Current page</option>
-                <option value="selected">Selected rows</option>
-                <option value="all">All rows</option>
-              </select>
-            </span>
+            <DropdownMenu label="Map">
+              <div style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 200, padding: "2px 4px" }}>
+                <span className="field">
+                  Scope
+                  <select
+                    value={mapScope ?? ""}
+                    onChange={(e) => setMapScope((e.target.value || null) as MapScope | null)}
+                  >
+                    <option value="">Hidden</option>
+                    <option value="page">Current page</option>
+                    <option value="selected">Selected rows</option>
+                    <option value="all">All rows</option>
+                  </select>
+                </span>
+                <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <input
+                    type="checkbox"
+                    checked={showBbox}
+                    onChange={(e) => setShowBbox(e.target.checked)}
+                  />
+                  Show dataset bbox
+                </label>
+              </div>
+            </DropdownMenu>
+            {mapScope && <span className="badge">map: {mapScope}</span>}
+            {showBbox && <span className="badge">bbox shown</span>}
             {mapLoading && <span className="badge">loading geometries...</span>}
             {mapTruncated && <span className="badge">not all geometries shown (limit reached)</span>}
+            {bboxLoading && <span className="badge">computing bbox...</span>}
           </>
         )}
         <div className="spacer" />
-        <span className="field" style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-          Export:
-          <button className="secondary" onClick={() => handleExport("json")}>
-            JSON
-          </button>
-          <button className="secondary" onClick={() => handleExport("csv")}>
-            CSV
-          </button>
-          <button className="secondary" onClick={() => handleExport("parquet")}>
-            Parquet
-          </button>
-        </span>
-        <a href={downloadFileUrl(file.file_id)}>
-          <button className="secondary">Download original</button>
-        </a>
+        <DropdownMenu
+          label="Tools"
+          items={[
+            { label: "Validate file", onClick: () => setShowValidation(true) },
+            { label: "Add column", onClick: () => setShowAddColumn(true) },
+            { label: "Generate values", onClick: () => setShowGenerate(true) },
+          ]}
+        />
+        <DropdownMenu
+          label="Export"
+          items={[
+            { label: "JSON", href: exportFileUrl(file.file_id, "json") },
+            { label: "CSV", href: exportFileUrl(file.file_id, "csv") },
+            { label: "Parquet", href: exportFileUrl(file.file_id, "parquet") },
+            { label: "Schema (JSON)", href: exportSchemaUrl(file.file_id) },
+            { label: "Original file", href: downloadFileUrl(file.file_id) },
+          ]}
+        />
         <button onClick={handleSave} disabled={saving}>
           {saving ? "Saving..." : "Save"}
         </button>
       </div>
 
       {error && <div className="error-banner">{error}</div>}
-      {message && (
-        <div className="error-banner" style={{ background: "#173a2b", borderColor: "#1f6b41", color: "#bbf7d0" }}>
-          {message}
-        </div>
-      )}
 
-      {mapScope && geometryColumn && <GeoMap features={mapFeatures} />}
+      {(mapScope || showBbox) && geometryColumn && (
+        <GeoMap features={mapScope ? mapFeatures : []} bbox={showBbox ? datasetBbox : null} />
+      )}
 
       {schema && (
         <DataGrid
-          columns={schema.columns}
+          columns={visibleColumns}
           rows={rows}
           loading={loading}
           selected={selected}
@@ -351,8 +445,9 @@ export default function Editor({
           onClose={() => setShowGenerate(false)}
           onDone={() => {
             setShowGenerate(false);
-            setMessage("Values generated.");
+            showToast("Values generated.");
             loadRows();
+            if (showBbox) loadBbox();
           }}
         />
       )}
@@ -371,7 +466,7 @@ export default function Editor({
           onClose={() => setShowAddColumn(false)}
           onDone={() => {
             setShowAddColumn(false);
-            setMessage("Column added.");
+            showToast("Column added.");
             loadSchema();
             loadRows();
           }}

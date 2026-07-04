@@ -2,6 +2,7 @@
 first time it's accessed and all edits (manual + generated) are applied to
 that in-memory copy until the user explicitly saves.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -11,15 +12,28 @@ import pandas as pd
 
 @dataclass
 class OpenFile:
+    """An opened file in the session cache."""
+
     df: pd.DataFrame
     is_geo: bool
     geometry_column: str | None
     crs: str | None
     dirty: bool = False
     kinds: dict[str, str] = field(default_factory=dict)
+    # Cached (min_lon, min_lat, max_lon, max_lat) of the geometry column.
+    # None means "not computed yet"; any mutation of the geometry column
+    # must reset this back to None so it gets recomputed on next access.
+    bbox: tuple[float, float, float, float] | None = None
+    # Cached lowercased "all columns joined" text per row, used by free-text
+    # search so it doesn't re-stringify every column on every keystroke.
+    # None means "not built yet"; any mutation of df's content/columns must
+    # reset this back to None so it gets rebuilt on next access.
+    search_blob: pd.Series | None = None
 
 
 class SessionCache:
+    """Simple in-memory cache of opened files."""
+
     def __init__(self) -> None:
         self._open: dict[str, OpenFile] = {}
 
