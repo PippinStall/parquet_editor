@@ -1,0 +1,117 @@
+from __future__ import annotations
+
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import Response
+from pydantic import TypeAdapter, ValidationError
+
+from ..schemas.models import CellEdit, FilterSpec, GeometriesResponse, SaveRequest, SaveResponse
+from ..services.parquet_service import (
+    ParquetServiceError,
+    edit_cell,
+    export_file,
+    get_geometries,
+    get_rows,
+    get_schema,
+    save_file,
+)
+
+router = APIRouter(prefix="/api/files", tags=["data"])
+
+_filters_adapter = TypeAdapter(list[FilterSpec])
+
+
+@router.get("/{file_id}/schema")
+def schema(file_id: str) -> dict:
+    try:
+        return get_schema(file_id)
+    except ParquetServiceError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/{file_id}/rows")
+def rows(
+    file_id: str,
+    page: int = 0,
+    page_size: int = 50,
+    sort_by: str | None = None,
+    sort_dir: str = "asc",
+    search: str | None = None,
+    filters: str | None = None,
+) -> dict:
+    if page < 0 or page_size <= 0 or page_size > 1000:
+        raise HTTPException(status_code=400, detail="Invalid page/page_size")
+    if sort_dir not in ("asc", "desc"):
+        raise HTTPException(status_code=400, detail="sort_dir must be 'asc' or 'desc'")
+
+    parsed_filters = None
+    if filters:
+        try:
+            parsed_filters = [f.model_dump() for f in _filters_adapter.validate_json(filters)]
+        except ValidationError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid filters: {exc}") from exc
+
+    try:
+        return get_rows(
+            file_id,
+            page,
+            page_size,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+            search=search,
+            filters=parsed_filters,
+        )
+    except ParquetServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.patch("/{file_id}/cell")
+def patch_cell(file_id: str, edit: CellEdit) -> dict[str, bool]:
+    try:
+        edit_cell(file_id, edit.row_index, edit.column, edit.value)
+    except ParquetServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True}
+
+
+@router.post("/{file_id}/save", response_model=SaveResponse)
+def save(file_id: str, req: SaveRequest) -> SaveResponse:
+    try:
+        record = save_file(file_id, legacy_int96_timestamps=req.legacy_int96_timestamps)
+    except ParquetServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return SaveResponse(file_id=file_id, saved=True, size_bytes=record.size_bytes)
+
+
+@router.get("/{file_id}/export")
+def export(file_id: str, format: str = Query(..., pattern="^(json|csv|parquet)$")) -> Response:
+    try:
+        content, media_type, filename = export_file(file_id, format)
+    except ParquetServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/{file_id}/geometries", response_model=GeometriesResponse)
+def geometries(
+    file_id: str,
+    scope: str = Query("all", pattern="^(all|selected)$"),
+    row_indices: str | None = None,
+    limit: int = 5000,
+) -> dict:
+    parsed_indices = None
+    if scope == "selected":
+        if not row_indices:
+            raise HTTPException(status_code=400, detail="row_indices is required when scope=selected")
+        try:
+            parsed_indices = [int(x) for x in row_indices.split(",") if x.strip() != ""]
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid row_indices: {exc}") from exc
+
+    try:
+        return get_geometries(file_id, parsed_indices, limit=limit)
+    except ParquetServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

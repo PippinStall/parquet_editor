@@ -1,0 +1,117 @@
+# Parquet / GeoParquet Editor
+
+A web service for viewing and editing `.parquet`/`.geoparquet` files: manual cell editing
+that respects each column's type, auto-generation of values by range/list, and viewing
+geoparquet geometries on a map (Leaflet).
+
+## Stack
+
+- **Backend**: FastAPI, pandas/pyarrow (plain parquet), geopandas/shapely (geoparquet).
+- **Frontend**: React + TypeScript + Vite, react-leaflet + leaflet-draw for the map.
+- **Docker Compose**: `backend` (FastAPI, port 8000) + `frontend` (nginx, serves the
+  static build and proxies `/api` to the backend).
+
+## Running it
+
+```bash
+docker compose up --build
+```
+
+- App: http://localhost:18080
+- API directly: http://localhost:18010/api (Swagger UI: http://localhost:18010/docs)
+
+(Ports 18080/18010 were chosen to avoid clashing with typical dev-server ports like
+8080/8000 — change them in `docker-compose.yml` if needed.)
+
+Uploaded files are stored in `./backend/storage` (mounted as a volume — they survive
+container restarts).
+
+## Local development without Docker
+
+Backend:
+
+```bash
+cd backend
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000
+```
+
+Frontend (the Vite dev server proxies `/api` to `localhost:8000`, see
+`frontend/vite.config.ts`):
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+## Features
+
+1. **Upload and file list** — drag-and-drop or pick a `.parquet`/`.geoparquet` file;
+   a list of uploaded files with size/row/column counts, download, delete.
+2. **Manual editing** — double-clicking a cell in the table opens an editor whose input
+   type depends on the column's type (number, checkbox, date, WKT text for geometry).
+   The value is validated against the column's type on the backend before being applied.
+3. **Auto-generate values** — the "Generate values" button opens a dialog where you pick
+   columns and set parameters per its type:
+   - int/float — `min`/`max`;
+   - string — a comma-separated list of values;
+   - bool — % of values that are `true`;
+   - date/timestamp — a date range;
+   - geometry — a bbox (typed in or drawn as a rectangle on the map) — random points are
+     generated inside the bbox.
+   Generation applies either to all rows or only to the rows checked in the table.
+4. **View geometry on a map** — for geoparquet files, the "Map" selector shows the
+   geometries of the current page, only the checked rows, or all rows in the file (capped
+   at 5000 geometries, with a note if some are omitted) on a Leaflet map.
+5. **Save** — edits are applied in memory on the server; the "Save" button writes the
+   file back to disk (for geoparquet, the CRS and geo metadata are preserved).
+6. **Validate file** — the "Validate file" button shows basic data-quality stats: null
+   counts per column, the number of exact duplicate rows, `inf`/`-inf` in numeric
+   columns, invalid/empty geometries.
+   From the same dialog, for any column with null values (except geometry), you can pick
+   a strategy and click "Fill" — gaps are filled from **that column's own existing
+   values**, nothing external is used:
+   - *mean* / *median* — int/float/date/timestamp only;
+   - *most frequent value* (mode) — any type;
+   - *random from existing values* — bootstrap-sampling from the column's non-null
+     values, which preserves the original distribution better than a constant would.
+   Rows that already have a value are left untouched.
+7. **Merge files** — in the file list, check 2+ files and click "Merge selected": columns
+   are unioned (missing values become null), and the result is saved as a new file. The
+   deduplication rule is chosen in the dialog:
+   - *exact match across all columns* (default) — a row is a duplicate only if it fully
+     matches another row in every column;
+   - *by key columns* (e.g. `id`) — rows sharing the same key value are collapsed into
+     one: for each column, the first non-null value among the matching rows is kept, so a
+     record from one file fills in the gaps of a record from another instead of the row
+     being duplicated outright. When two non-null values conflict, whichever was
+     encountered first (in the order the files were selected) wins.
+   If any of the files is geoparquet, the result is geoparquet too (geometry is
+   normalized to a single column/CRS taken from the first geo file).
+8. **Add/delete a column** — the "Add column" button creates a new column
+   (int/float/string/bool/date/timestamp) with an optional default value applied to all
+   rows; the × on a column header in the table deletes it. Adding a geometry column isn't
+   supported (that requires fully converting the file to geo).
+9. **Export** — the "JSON"/"CSV"/"Parquet" toolbar buttons export the current data in the
+   chosen format; the geometry column is always excluded from exports (unlike "Save",
+   which keeps it).
+10. **Filtering, search, sorting** — the search box matches a substring across all
+    columns; the "Filters" button builds column+operator+value rules (the available
+    operators depend on the type: `=`/`≠`/`<`/`<=`/`>`/`>=` for numbers and dates,
+    `=`/contains/starts-with for strings); clicking a column header sorts by it (clicking
+    again reverses direction). All of this works on top of pagination and can be combined
+    at the same time.
+
+## Current limitations
+
+- Edits live in the backend process's memory until you click "Save"; restarting the
+  backend container without saving loses unsaved edits.
+- Adding/deleting rows isn't implemented — only editing values in existing rows (per the
+  original spec).
+- For very large files (millions of rows), loading the whole file into the backend's
+  memory can be slow — the service is designed for moderately sized files.
+- Merging files with differently-named geometry columns requires the CRSes to be defined
+  and compatible for reprojection; for files without a consistent geometry schema the
+  result may be unexpected — check the output before saving over important data.

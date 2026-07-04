@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+
+backend/storage/*
+!backend/storage/.gitkeep
+
+frontend/node_modules/
+frontend/dist/
+
+.claude/
+
+# Ignore Parquet and GeoParquet files
+*.parquet
+*.geoparquet

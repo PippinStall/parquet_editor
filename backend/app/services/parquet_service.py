@@ -1,0 +1,495 @@
+from __future__ import annotations
+
+import datetime
+import io
+import math
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
+import pyarrow.parquet as pq
+
+from ..helpers.column_types import KIND_GEOMETRY, column_kind
+from ..helpers.file_store import FileRecord, store
+from ..helpers.session_cache import OpenFile, cache
+
+RESERVED_COLUMN_NAMES = {"__row_index__"}
+
+_KIND_TO_DTYPE = {
+    "int": "Int64",
+    "float": "float64",
+    "bool": "boolean",
+    "string": "string",
+    "date": "datetime64[ns]",
+    "timestamp": "datetime64[ns]",
+}
+
+
+class ParquetServiceError(ValueError):
+    pass
+
+
+def _is_geoparquet(path: Path) -> bool:
+    try:
+        schema = pq.read_schema(path)
+    except Exception as exc:  # pragma: no cover - surfaced to the API layer
+        raise ParquetServiceError(f"Failed to read parquet schema: {exc}") from exc
+    metadata = schema.metadata or {}
+    return b"geo" in metadata
+
+
+def _load_dataframe(path: Path) -> tuple[pd.DataFrame, bool, str | None, str | None]:
+    is_geo = _is_geoparquet(path)
+    if is_geo:
+        import geopandas as gpd
+
+        gdf = gpd.read_parquet(path)
+        geometry_column = gdf.geometry.name if hasattr(gdf, "geometry") else None
+        crs = str(gdf.crs) if gdf.crs is not None else None
+        return gdf, True, geometry_column, crs
+
+    df = pd.read_parquet(path, engine="pyarrow")
+    return df, False, None, None
+
+
+def open_file(file_id: str) -> OpenFile:
+    entry = cache.get(file_id)
+    if entry is not None:
+        return entry
+
+    record = store.get(file_id)
+    if record is None:
+        raise ParquetServiceError(f"Unknown file_id: {file_id}")
+
+    df, is_geo, geometry_column, crs = _load_dataframe(record.path)
+
+    kinds = {
+        col: column_kind(df[col], is_geometry_col=(is_geo and col == geometry_column))
+        for col in df.columns
+    }
+
+    entry = OpenFile(
+        df=df, is_geo=is_geo, geometry_column=geometry_column, crs=crs, kinds=kinds
+    )
+    cache.set(file_id, entry)
+    return entry
+
+
+def get_schema(file_id: str) -> dict[str, Any]:
+    entry = open_file(file_id)
+    columns = [
+        {
+            "name": col,
+            "dtype": str(entry.df[col].dtype),
+            "kind": entry.kinds[col],
+            "nullable": True,
+        }
+        for col in entry.df.columns
+    ]
+    return {
+        "file_id": file_id,
+        "is_geo": entry.is_geo,
+        "crs": entry.crs,
+        "row_count": len(entry.df),
+        "columns": columns,
+    }
+
+
+def _json_safe(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    if isinstance(value, (np.floating,)):
+        f = float(value)
+        return None if math.isnan(f) else f
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, np.bool_):
+        return bool(value)
+    if isinstance(value, pd.Timestamp):
+        if pd.isna(value):
+            return None
+        return value.isoformat()
+    if isinstance(value, (datetime.datetime, datetime.date)):
+        return value.isoformat()
+    if isinstance(value, bytes):
+        return value.hex()
+    try:
+        from shapely.geometry.base import BaseGeometry
+
+        if isinstance(value, BaseGeometry):
+            return value.wkt
+    except ImportError:  # pragma: no cover - geopandas always installed here
+        pass
+    if isinstance(value, float):
+        return value
+    if pd.isna(value):
+        return None
+    return value
+
+
+_FILTER_OPS_NUMERIC = {"eq", "ne", "lt", "lte", "gt", "gte"}
+_FILTER_OPS_STRING = {"eq", "contains", "startswith"}
+_FILTER_OPS_BOOL = {"eq"}
+
+
+def _apply_filters(
+    df: pd.DataFrame, kinds: dict[str, str], filters: list[dict[str, Any]]
+) -> pd.Series:
+    mask = pd.Series(True, index=df.index)
+    for f in filters:
+        column, op, value = f.get("column"), f.get("op"), f.get("value")
+        if column not in df.columns:
+            raise ParquetServiceError(f"Unknown filter column: {column}")
+
+        kind = kinds.get(column)
+        series = df[column]
+
+        if kind in ("int", "float", "date", "timestamp"):
+            if op not in _FILTER_OPS_NUMERIC:
+                raise ParquetServiceError(f"Unsupported filter op '{op}' for kind '{kind}'")
+            casted = _cast_value(kind, value)
+            if op == "eq":
+                cond = series == casted
+            elif op == "ne":
+                cond = series != casted
+            elif op == "lt":
+                cond = series < casted
+            elif op == "lte":
+                cond = series <= casted
+            elif op == "gt":
+                cond = series > casted
+            else:
+                cond = series >= casted
+        elif kind == "string":
+            if op not in _FILTER_OPS_STRING:
+                raise ParquetServiceError(f"Unsupported filter op '{op}' for kind '{kind}'")
+            str_series = series.astype(str)
+            text = "" if value is None else str(value)
+            if op == "eq":
+                cond = str_series == text
+            elif op == "contains":
+                cond = str_series.str.contains(text, case=False, na=False, regex=False)
+            else:
+                cond = str_series.str.startswith(text, na=False)
+        elif kind == "bool":
+            if op not in _FILTER_OPS_BOOL:
+                raise ParquetServiceError(f"Unsupported filter op '{op}' for kind '{kind}'")
+            cond = series == _cast_value("bool", value)
+        else:
+            raise ParquetServiceError(f"Column '{column}' of kind '{kind}' is not filterable")
+
+        mask &= cond.fillna(False)
+    return mask
+
+
+def _apply_search(df: pd.DataFrame, search: str) -> pd.Series:
+    lowered = search.lower()
+    mask = pd.Series(False, index=df.index)
+    for col in df.columns:
+        try:
+            mask = mask | df[col].astype(str).str.lower().str.contains(lowered, na=False, regex=False)
+        except (TypeError, ValueError):
+            continue
+    return mask
+
+
+def get_rows(
+    file_id: str,
+    page: int,
+    page_size: int,
+    sort_by: str | None = None,
+    sort_dir: str = "asc",
+    search: str | None = None,
+    filters: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    entry = open_file(file_id)
+    df = entry.df
+
+    mask = pd.Series(True, index=df.index)
+    if filters:
+        mask &= _apply_filters(df, entry.kinds, filters)
+    if search:
+        mask &= _apply_search(df, search)
+
+    filtered_index = df.index[mask]
+
+    if sort_by:
+        if sort_by not in df.columns:
+            raise ParquetServiceError(f"Unknown sort column: {sort_by}")
+        if entry.kinds.get(sort_by) == "geometry":
+            raise ParquetServiceError("Cannot sort by a geometry column")
+        ascending = sort_dir != "desc"
+        filtered_index = (
+            df.loc[filtered_index, sort_by]
+            .sort_values(ascending=ascending, kind="mergesort", na_position="last")
+            .index
+        )
+
+    total_rows = len(filtered_index)
+    start = page * page_size
+    end = min(start + page_size, total_rows)
+    page_index = filtered_index[start:end]
+
+    rows = []
+    for row_index in page_index:
+        record = {"__row_index__": int(row_index)}
+        for col in df.columns:
+            record[col] = _json_safe(df.at[row_index, col])
+        rows.append(record)
+
+    return {
+        "page": page,
+        "page_size": page_size,
+        "total_rows": total_rows,
+        "rows": rows,
+    }
+
+
+def _cast_value(kind: str, raw_value: Any) -> Any:
+    if raw_value is None:
+        return None
+
+    if kind == "int":
+        return int(raw_value)
+    if kind == "float":
+        return float(raw_value)
+    if kind == "bool":
+        if isinstance(raw_value, str):
+            return raw_value.strip().lower() in {"true", "1", "yes"}
+        return bool(raw_value)
+    if kind == "string":
+        return str(raw_value)
+    if kind in {"date", "timestamp"}:
+        ts = pd.to_datetime(raw_value)
+        return ts.date() if kind == "date" else ts
+    if kind == "geometry":
+        from shapely import wkt
+
+        try:
+            return wkt.loads(raw_value)
+        except Exception as exc:
+            raise ParquetServiceError(f"Invalid WKT geometry: {exc}") from exc
+
+    return raw_value
+
+
+def edit_cell(file_id: str, row_index: int, column: str, value: Any) -> None:
+    entry = open_file(file_id)
+    if column not in entry.df.columns:
+        raise ParquetServiceError(f"Unknown column: {column}")
+    if row_index < 0 or row_index >= len(entry.df):
+        raise ParquetServiceError(f"Row index out of range: {row_index}")
+
+    kind = entry.kinds[column]
+    casted = _cast_value(kind, value)
+
+    # Assign through a dtype-matched Series rather than a raw scalar: pandas'
+    # scalar setitem is strict about e.g. datetime64 unit mismatches (ns vs.
+    # us), while Series.astype + column assignment coerces safely.
+    single = pd.Series([casted], index=[row_index])
+    if kind != "geometry":
+        try:
+            single = single.astype(entry.df[column].dtype)
+        except (TypeError, ValueError):
+            pass
+    entry.df.loc[single.index, column] = single
+    entry.dirty = True
+
+
+def add_column(file_id: str, name: str, kind: str, default: Any = None) -> None:
+    entry = open_file(file_id)
+    if name in RESERVED_COLUMN_NAMES:
+        raise ParquetServiceError(f"'{name}' is a reserved column name")
+    if name in entry.df.columns:
+        raise ParquetServiceError(f"Column already exists: {name}")
+    if kind not in _KIND_TO_DTYPE:
+        supported = ", ".join(sorted(_KIND_TO_DTYPE))
+        if kind == KIND_GEOMETRY:
+            raise ParquetServiceError(
+                "Adding a geometry column is not supported — geometry columns "
+                "require a full geo-conversion of the file"
+            )
+        raise ParquetServiceError(f"Unsupported column kind for add_column: {kind} (supported: {supported})")
+
+    n = len(entry.df)
+    value = _cast_value(kind, default) if default is not None else None
+    series = pd.Series([value] * n)
+    target_dtype = _KIND_TO_DTYPE.get(kind)
+    if target_dtype:
+        try:
+            series = series.astype(target_dtype)
+        except (TypeError, ValueError):
+            pass
+
+    entry.df[name] = series
+    entry.kinds[name] = kind
+    entry.dirty = True
+
+
+def delete_column(file_id: str, name: str) -> None:
+    entry = open_file(file_id)
+    if name not in entry.df.columns:
+        raise ParquetServiceError(f"Unknown column: {name}")
+
+    entry.df.drop(columns=[name], inplace=True)
+    entry.kinds.pop(name, None)
+    if entry.geometry_column == name:
+        entry.geometry_column = None
+    entry.dirty = True
+
+
+FILL_STRATEGIES = {"mean", "median", "mode", "random"}
+_MEAN_MEDIAN_KINDS = {"int", "float", "date", "timestamp"}
+
+
+def fill_nulls(file_id: str, column: str, strategy: str) -> int:
+    """Fill null values in `column` from its own existing values, using one
+    of: mean/median (numeric & date/timestamp only), mode (most frequent
+    existing value), or random (bootstrap-sample from existing values,
+    preserving the column's own distribution). Returns how many cells were
+    filled.
+    """
+    entry = open_file(file_id)
+    if column not in entry.df.columns:
+        raise ParquetServiceError(f"Unknown column: {column}")
+    if strategy not in FILL_STRATEGIES:
+        raise ParquetServiceError(
+            f"Unknown fill strategy: {strategy} (supported: {', '.join(sorted(FILL_STRATEGIES))})"
+        )
+
+    kind = entry.kinds[column]
+    if kind == KIND_GEOMETRY:
+        raise ParquetServiceError("Filling a geometry column is not supported")
+    if strategy in ("mean", "median") and kind not in _MEAN_MEDIAN_KINDS:
+        raise ParquetServiceError(
+            f"'{strategy}' is only supported for int/float/date/timestamp columns (got '{kind}')"
+        )
+
+    series = entry.df[column]
+    null_mask = series.isna()
+    n_missing = int(null_mask.sum())
+    if n_missing == 0:
+        return 0
+
+    non_null = series.dropna()
+    if len(non_null) == 0:
+        raise ParquetServiceError("Column has no existing values to fill from")
+
+    if strategy in ("mean", "median"):
+        if kind in ("date", "timestamp"):
+            as_dt = pd.to_datetime(non_null)
+            agg = as_dt.mean() if strategy == "mean" else as_dt.median()
+            fill_value = agg.date() if kind == "date" else agg
+        else:
+            agg = non_null.mean() if strategy == "mean" else non_null.median()
+            fill_value = int(round(agg)) if kind == "int" else float(agg)
+        fill_values: list[Any] = [fill_value] * n_missing
+    elif strategy == "mode":
+        fill_value = non_null.mode().iloc[0]
+        fill_values = [fill_value] * n_missing
+    else:  # random: bootstrap-sample from the column's own existing values
+        fill_values = list(np.random.choice(non_null.to_numpy(dtype=object), size=n_missing))
+
+    idx = series.index[null_mask]
+    fill_series = pd.Series(fill_values, index=idx)
+    try:
+        fill_series = fill_series.astype(series.dtype)
+    except (TypeError, ValueError):
+        pass
+    entry.df.loc[idx, column] = fill_series
+    entry.dirty = True
+    return n_missing
+
+
+def save_file(file_id: str, legacy_int96_timestamps: bool = False) -> FileRecord:
+    entry = open_file(file_id)
+    record = store.get(file_id)
+    if record is None:
+        raise ParquetServiceError(f"Unknown file_id: {file_id}")
+
+    can_write_geo = entry.is_geo and entry.geometry_column and entry.geometry_column in entry.df.columns
+    if can_write_geo:
+        entry.df.to_parquet(record.path, engine="pyarrow", compression="snappy")
+    else:
+        entry.df.to_parquet(
+            record.path,
+            engine="pyarrow",
+            compression="snappy",
+            use_deprecated_int96_timestamps=legacy_int96_timestamps,
+        )
+
+    entry.dirty = False
+    return record
+
+
+EXPORT_FORMATS = {"json", "csv", "parquet"}
+
+
+def export_file(file_id: str, fmt: str) -> tuple[bytes, str, str]:
+    if fmt not in EXPORT_FORMATS:
+        raise ParquetServiceError(f"Unsupported export format: {fmt}")
+
+    entry = open_file(file_id)
+    record = store.get(file_id)
+    if record is None:
+        raise ParquetServiceError(f"Unknown file_id: {file_id}")
+
+    export_df = entry.df
+    if entry.geometry_column and entry.geometry_column in export_df.columns:
+        export_df = pd.DataFrame(export_df.drop(columns=[entry.geometry_column]))
+
+    base_name = Path(record.filename).stem
+
+    if fmt == "json":
+        buf = io.StringIO()
+        export_df.to_json(buf, orient="records", date_format="iso")
+        return buf.getvalue().encode("utf-8"), "application/json", f"{base_name}.json"
+
+    if fmt == "csv":
+        buf = io.StringIO()
+        export_df.to_csv(buf, index=False)
+        return buf.getvalue().encode("utf-8"), "text/csv", f"{base_name}.csv"
+
+    buf = io.BytesIO()
+    export_df.to_parquet(buf, engine="pyarrow", compression="snappy")
+    return buf.getvalue(), "application/octet-stream", f"{base_name}.parquet"
+
+
+def get_geometries(
+    file_id: str, row_indices: list[int] | None, limit: int = 5000
+) -> dict[str, Any]:
+    entry = open_file(file_id)
+    if not entry.is_geo or not entry.geometry_column or entry.geometry_column not in entry.df.columns:
+        raise ParquetServiceError("File has no geometry column")
+
+    col = entry.geometry_column
+    total_rows = len(entry.df)
+
+    if row_indices is not None:
+        for idx in row_indices:
+            if idx < 0 or idx >= total_rows:
+                raise ParquetServiceError(f"Row index out of range: {idx}")
+        candidate_indices = row_indices
+    else:
+        candidate_indices = list(range(total_rows))
+
+    total = len(candidate_indices)
+    truncated = total > limit
+    candidate_indices = candidate_indices[:limit]
+
+    features = []
+    for idx in candidate_indices:
+        geom = entry.df[col].iloc[idx]
+        if geom is None or (hasattr(geom, "is_empty") and geom.is_empty):
+            continue
+        features.append({"row_index": idx, "wkt": geom.wkt})
+
+    return {
+        "geometry_column": col,
+        "total": total,
+        "truncated": truncated,
+        "features": features,
+    }
