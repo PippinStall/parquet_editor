@@ -85,6 +85,7 @@ def _generate_geometry(params: dict[str, Any], n: int) -> list:
     )
     if min_lon > max_lon or min_lat > max_lat:
         raise ParquetServiceError("min_lon/min_lat must be <= max_lon/max_lat")
+
     lons = np.random.uniform(min_lon, max_lon, size=n)
     lats = np.random.uniform(min_lat, max_lat, size=n)
 

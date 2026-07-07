@@ -118,11 +118,22 @@ export interface GeometriesResult {
 
 export type ExportFormat = "json" | "csv" | "parquet";
 
-export type CreatableColumnKind = "int" | "float" | "string" | "bool" | "date" | "timestamp";
+export type CreatableColumnKind =
+  | "int"
+  | "float"
+  | "string"
+  | "bool"
+  | "date"
+  | "timestamp"
+  | "geometry";
 
 export interface CreateDatasetColumn {
   name: string;
   kind: CreatableColumnKind;
+  min_lon?: number;
+  max_lon?: number;
+  min_lat?: number;
+  max_lat?: number;
 }
 
 export interface CreateDatasetRequest {

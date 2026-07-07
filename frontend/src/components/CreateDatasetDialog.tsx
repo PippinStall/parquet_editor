@@ -10,6 +10,7 @@ const KIND_OPTIONS: { value: CreatableColumnKind; label: string }[] = [
   { value: "bool", label: "boolean" },
   { value: "date", label: "date" },
   { value: "timestamp", label: "date & time" },
+  { value: "geometry", label: "geometry (point)" },
 ];
 
 function isCreatableKind(value: unknown): value is CreatableColumnKind {
@@ -84,11 +85,23 @@ export default function CreateDatasetDialog({
       return;
     }
     const cleaned = columns
-      .map((c) => ({ name: c.name.trim(), kind: c.kind }))
+      .map((c) => ({ ...c, name: c.name.trim() }))
       .filter((c) => c.name !== "");
     if (cleaned.length === 0) {
       setError("Add at least one column");
       return;
+    }
+    for (const c of cleaned) {
+      if (c.kind !== "geometry") continue;
+      const bounds = [c.min_lon, c.max_lon, c.min_lat, c.max_lat];
+      if (bounds.some((v) => v === undefined || Number.isNaN(v))) {
+        setError(`Geometry column "${c.name}": please provide min_lon/max_lon/min_lat/max_lat`);
+        return;
+      }
+      if (c.min_lon! > c.max_lon! || c.min_lat! > c.max_lat!) {
+        setError(`Geometry column "${c.name}": min must be <= max`);
+        return;
+      }
     }
 
     setSubmitting(true);
@@ -116,7 +129,8 @@ export default function CreateDatasetDialog({
         <p style={{ color: "#9aa4b2", fontSize: 13 }}>
           Define a column schema — either build it below, or load it from a JSON schema file
           (e.g. one exported via "Schema (JSON)" from the editor) — and a new file with
-          randomized placeholder values will be created. Geometry columns aren't supported here.
+          randomized placeholder values will be created. A geometry column requires a
+          lon/lat bounding box so its points (and the resulting bbox) are known up front.
         </p>
 
         <div className="params-row" style={{ marginBottom: 10 }}>
@@ -172,6 +186,43 @@ export default function CreateDatasetDialog({
                 ×
               </button>
             </div>
+
+            {col.kind === "geometry" && (
+              <div className="params-row" style={{ marginTop: 8 }}>
+                <span className="field">
+                  min_lon
+                  <input
+                    type="number"
+                    value={col.min_lon ?? ""}
+                    onChange={(e) => updateColumn(idx, { min_lon: Number(e.target.value) })}
+                  />
+                </span>
+                <span className="field">
+                  min_lat
+                  <input
+                    type="number"
+                    value={col.min_lat ?? ""}
+                    onChange={(e) => updateColumn(idx, { min_lat: Number(e.target.value) })}
+                  />
+                </span>
+                <span className="field">
+                  max_lon
+                  <input
+                    type="number"
+                    value={col.max_lon ?? ""}
+                    onChange={(e) => updateColumn(idx, { max_lon: Number(e.target.value) })}
+                  />
+                </span>
+                <span className="field">
+                  max_lat
+                  <input
+                    type="number"
+                    value={col.max_lat ?? ""}
+                    onChange={(e) => updateColumn(idx, { max_lat: Number(e.target.value) })}
+                  />
+                </span>
+              </div>
+            )}
           </div>
         ))}
 

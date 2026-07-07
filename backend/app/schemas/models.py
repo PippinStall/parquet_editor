@@ -179,6 +179,11 @@ class CreateDatasetColumn(BaseModel):
 
     name: str
     kind: str
+    # Mandatory bounding box for kind="geometry" — see create_dataset_service._geometry_params.
+    min_lon: float | None = None
+    max_lon: float | None = None
+    min_lat: float | None = None
+    max_lat: float | None = None
 
 
 class CreateDatasetRequest(BaseModel):
