@@ -32,7 +32,13 @@ import ValidationDialog from "./ValidationDialog";
 
 const PAGE_SIZE = 50;
 
-type MapMode = "all" | "selected";
+type MapMode = "all" | "selected" | "viewed";
+
+function rowsToFeatures(rows: RowRecord[], column: string): GeoFeature[] {
+  return rows
+    .filter((r) => typeof r[column] === "string")
+    .map((r) => ({ rowIndex: r.__row_index__, wkt: r[column] as string }));
+}
 
 export default function Editor({
   file,
@@ -62,7 +68,7 @@ export default function Editor({
   const [filters, setFilters] = useState<FilterSpec[]>([]);
 
   const [mapVisible, setMapVisible] = useState(false);
-  const [mapMode, setMapMode] = useState<MapMode>("all");
+  const [mapMode, setMapMode] = useState<MapMode>("viewed");
   const [mapFeatures, setMapFeatures] = useState<GeoFeature[]>([]);
   const [mapLoading, setMapLoading] = useState(false);
   const [mapTruncated, setMapTruncated] = useState(false);
@@ -123,6 +129,12 @@ export default function Editor({
   useEffect(() => {
     if (!mapVisible || !geometryColumn) return;
 
+    if (mapMode === "viewed") {
+      setMapFeatures(rowsToFeatures(rows, geometryColumn));
+      setMapTruncated(false);
+      return;
+    }
+
     if (mapMode === "selected" && selected.size === 0) {
       setMapFeatures([]);
       setMapTruncated(false);
@@ -143,7 +155,7 @@ export default function Editor({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mapVisible, mapMode, geometryColumn, file.file_id, selected]);
+  }, [mapVisible, mapMode, geometryColumn, file.file_id, rows, selected]);
 
   const loadBbox = useCallback(async () => {
     if (!geometryColumn) return;
@@ -320,7 +332,7 @@ export default function Editor({
           onChange={(e) => setSearchInput(e.target.value)}
           style={{ minWidth: 320 }}
         />
-        <button className="secondary" onClick={() => setShowFilters(true) }>
+        <button className="secondary" onClick={() => setShowFilters(true)}>
           Filter
         </button>
       </div>
@@ -334,10 +346,17 @@ export default function Editor({
             {mapVisible && (
               <>
                 <DropdownMenu
-                  label={mapMode === "all" ? "Show all" : "Show Selected"}
+                  label={
+                    mapMode === "selected"
+                      ? "Show Selected"
+                      : mapMode === "all"
+                        ? "Show all"
+                        : "Show viewed page"
+                  }
                   items={[
-                    { label: "Show all", onClick: () => setMapMode("all") },
+                    { label: "Show viewed page", onClick: () => setMapMode("viewed") },
                     { label: "Show Selected", onClick: () => setMapMode("selected") },
+                    { label: "Show all", onClick: () => setMapMode("all") },
                   ]}
                 />
                 <label style={{ display: "flex", alignItems: "center", gap: 6 }}>

@@ -100,12 +100,33 @@ export default function GenerateDialog({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [mapForColumn, setMapForColumn] = useState<string | null>(null);
+  const [columnSearch, setColumnSearch] = useState("");
+
+  const visibleColumns = generatable.filter((c) =>
+    c.name.toLowerCase().includes(columnSearch.trim().toLowerCase()),
+  );
 
   const toggleColumn = (name: string, checked: boolean) => {
     setSelectedColumns((prev) => {
       const next = new Set(prev);
       if (checked) next.add(name);
       else next.delete(name);
+      return next;
+    });
+  };
+
+  const selectAllVisible = () => {
+    setSelectedColumns((prev) => {
+      const next = new Set(prev);
+      for (const c of visibleColumns) next.add(c.name);
+      return next;
+    });
+  };
+
+  const clearVisibleSelection = () => {
+    setSelectedColumns((prev) => {
+      const next = new Set(prev);
+      for (const c of visibleColumns) next.delete(c.name);
       return next;
     });
   };
@@ -172,7 +193,7 @@ export default function GenerateDialog({
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <div className="modal modal-flex" onClick={(e) => e.stopPropagation()}>
         <h2>Auto-generate values</h2>
         {error && <div className="error-banner">{error}</div>}
 
@@ -195,8 +216,30 @@ export default function GenerateDialog({
           </label>
         </div>
 
-        <div>
-          {generatable.map((col) => {
+        <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
+          <input
+            placeholder="Search columns..."
+            value={columnSearch}
+            onChange={(e) => setColumnSearch(e.target.value)}
+            style={{ flex: 1 }}
+            autoFocus
+          />
+          <button className="secondary" type="button" onClick={selectAllVisible}>
+            Select all{columnSearch ? " shown" : ""}
+          </button>
+          <button className="secondary" type="button" onClick={clearVisibleSelection}>
+            Clear{columnSearch ? " shown" : ""}
+          </button>
+          <span className="badge">{selectedColumns.size} selected</span>
+        </div>
+
+        <div className="modal-scroll">
+          {visibleColumns.length === 0 && (
+            <div style={{ color: "#9aa4b2", fontSize: 13, padding: "8px 0" }}>
+              No columns match "{columnSearch}".
+            </div>
+          )}
+          {visibleColumns.map((col) => {
             const isSelected = selectedColumns.has(col.name);
             const draft = drafts[col.name] ?? {};
             return (

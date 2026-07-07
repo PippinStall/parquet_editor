@@ -240,6 +240,17 @@ table.data-grid td input, table.data-grid td select, table.data-grid td textarea
   font-size: 16px;
 }
 
+.modal-flex {
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-scroll {
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+}
+
 .column-spec {
   border: 1px solid #262b35;
   border-radius: 8px;
