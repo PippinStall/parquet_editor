@@ -56,6 +56,11 @@ def column_kind(series: pd.Series, is_geometry_col: bool) -> str:
                 return KIND_TIMESTAMP
             if all(isinstance(v, datetime.date) for v in sample):
                 return KIND_DATE
+            # Struct/list-typed parquet columns (e.g. a GeoParquet "covering"
+            # bbox column) come through pandas as object dtype holding
+            # dict/list values — not editable text, so don't misclassify.
+            if all(isinstance(v, (dict, list)) for v in sample):
+                return KIND_OTHER
         return KIND_STRING
     if pd.api.types.is_string_dtype(dtype):
         return KIND_STRING

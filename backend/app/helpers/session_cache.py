@@ -20,6 +20,13 @@ class OpenFile:
     crs: str | None
     dirty: bool = False
     kinds: dict[str, str] = field(default_factory=dict)
+    # True if the *original* file on disk encoded any timestamp column as
+    # legacy INT96 (the parquet-mr/Spark convention) rather than modern
+    # INT64+logical-type. Detected once at open time and used as the default
+    # on save, so round-tripping a file through this app doesn't silently
+    # flip its timestamp encoding and break schema-strict downstream readers
+    # (e.g. Spark's vectorized GeoParquet reader) that expect it preserved.
+    uses_int96_timestamps: bool = False
     # Cached (min_lon, min_lat, max_lon, max_lat) of the geometry column.
     # None means "not computed yet"; any mutation of the geometry column
     # must reset this back to None so it gets recomputed on next access.

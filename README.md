@@ -11,20 +11,45 @@ geoparquet geometries on a map (Leaflet).
 - **Docker Compose**: `backend` (FastAPI, port 8000) + `frontend` (nginx, serves the
   static build and proxies `/api` to the backend).
 
+## Configuration
+
+Settings live in a single `.env` file at the repo root (copy `.env.example` to `.env`
+to get started — `.env` itself is gitignored). It's read by three things:
+
+- **docker-compose** — auto-loaded for `${VAR}` substitution in `docker-compose.yml`
+  (host port mapping, storage volume path), and injected into the backend container
+  via `env_file:`.
+- **Backend** (`backend/app/config.py`, `pydantic-settings`) — reads the same file
+  directly for local (non-Docker) runs, or plain environment variables when running in
+  a container (which is how docker-compose delivers them — the `.env` file itself isn't
+  part of the image).
+- **Frontend dev server** (`frontend/vite.config.ts`) — reads it via Vite's `loadEnv` to
+  set its own port and API proxy target, so `npm run dev` always points at whatever
+  backend port is configured.
+
+| Variable | Default | Used by |
+|---|---|---|
+| `BACKEND_URL` / `BACKEND_PORT` | `http://localhost` / `8000` | docker-compose host port, Vite dev proxy target |
+| `FRONTEND_URL` / `FRONTEND_PORT` | `http://localhost` / `3000` | docker-compose host port, Vite dev server port |
+| `CORS_ALLOW_ORIGINS` | `*` | backend CORS middleware (comma-separated list, or `*`) |
+| `STORAGE_DIR` | `storage` | backend upload directory (relative to `backend/`, or absolute); also picked up by the docker-compose volume mount |
+
+Add new settings by adding a field to `Settings` in `backend/app/config.py` (with a
+default so existing setups keep working) and documenting it in `.env.example`.
+
 ## Running it
 
 ```bash
 docker compose up --build
 ```
 
-- App: http://localhost:18080
-- API directly: http://localhost:18010/api (Swagger UI: http://localhost:18010/docs)
-
-(Ports 18080/18010 were chosen to avoid clashing with typical dev-server ports like
-8080/8000 — change them in `docker-compose.yml` if needed.)
+With the example `.env` values: app at http://localhost:3000, API at
+http://localhost:8000/api (Swagger UI: http://localhost:8000/docs). Change
+`BACKEND_PORT`/`FRONTEND_PORT` in `.env` if those clash with something else on your
+machine — no need to touch `docker-compose.yml`.
 
 Uploaded files are stored in `./backend/storage` (mounted as a volume — they survive
-container restarts).
+container restarts; the folder name follows `STORAGE_DIR` if you change it).
 
 ## Local development without Docker
 
@@ -37,8 +62,8 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
 
-Frontend (the Vite dev server proxies `/api` to `localhost:8000`, see
-`frontend/vite.config.ts`):
+Frontend (the Vite dev server reads the root `.env` for its own port and to build the
+`/api` proxy target — see `frontend/vite.config.ts`):
 
 ```bash
 cd frontend

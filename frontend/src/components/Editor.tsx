@@ -32,13 +32,7 @@ import ValidationDialog from "./ValidationDialog";
 
 const PAGE_SIZE = 50;
 
-type MapScope = "page" | "selected" | "all";
-
-function rowsToFeatures(rows: RowRecord[], column: string): GeoFeature[] {
-  return rows
-    .filter((r) => typeof r[column] === "string")
-    .map((r) => ({ rowIndex: r.__row_index__, wkt: r[column] as string }));
-}
+type MapMode = "all" | "selected";
 
 export default function Editor({
   file,
@@ -67,7 +61,8 @@ export default function Editor({
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [filters, setFilters] = useState<FilterSpec[]>([]);
 
-  const [mapScope, setMapScope] = useState<MapScope | null>(null);
+  const [mapVisible, setMapVisible] = useState(false);
+  const [mapMode, setMapMode] = useState<MapMode>("all");
   const [mapFeatures, setMapFeatures] = useState<GeoFeature[]>([]);
   const [mapLoading, setMapLoading] = useState(false);
   const [mapTruncated, setMapTruncated] = useState(false);
@@ -126,15 +121,9 @@ export default function Editor({
   const geometryColumn = schema?.columns.find((c) => c.kind === "geometry")?.name;
 
   useEffect(() => {
-    if (!mapScope || !geometryColumn) return;
+    if (!mapVisible || !geometryColumn) return;
 
-    if (mapScope === "page") {
-      setMapFeatures(rowsToFeatures(rows, geometryColumn));
-      setMapTruncated(false);
-      return;
-    }
-
-    if (mapScope === "selected" && selected.size === 0) {
+    if (mapMode === "selected" && selected.size === 0) {
       setMapFeatures([]);
       setMapTruncated(false);
       return;
@@ -142,7 +131,7 @@ export default function Editor({
 
     let cancelled = false;
     setMapLoading(true);
-    getGeometries(file.file_id, mapScope, mapScope === "selected" ? Array.from(selected) : undefined)
+    getGeometries(file.file_id, mapMode, mapMode === "selected" ? Array.from(selected) : undefined)
       .then((res) => {
         if (cancelled) return;
         setMapFeatures(res.features);
@@ -154,7 +143,7 @@ export default function Editor({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mapScope, geometryColumn, file.file_id, rows, selected]);
+  }, [mapVisible, mapMode, geometryColumn, file.file_id, selected]);
 
   const loadBbox = useCallback(async () => {
     if (!geometryColumn) return;
@@ -339,32 +328,28 @@ export default function Editor({
       <div className="toolbar">
         {geometryColumn && (
           <>
-            <DropdownMenu label="Map">
-              <div style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 200, padding: "2px 4px" }}>
-                <span className="field">
-                  Scope
-                  <select
-                    value={mapScope ?? ""}
-                    onChange={(e) => setMapScope((e.target.value || null) as MapScope | null)}
-                  >
-                    <option value="">Hidden</option>
-                    <option value="page">Current page</option>
-                    <option value="selected">Selected rows</option>
-                    <option value="all">All rows</option>
-                  </select>
-                </span>
+            <button className="secondary" onClick={() => setMapVisible((v) => !v)}>
+              {mapVisible ? "Hide map" : "Show map"}
+            </button>
+            {mapVisible && (
+              <>
+                <DropdownMenu
+                  label={mapMode === "all" ? "Show all" : "Show Selected"}
+                  items={[
+                    { label: "Show all", onClick: () => setMapMode("all") },
+                    { label: "Show Selected", onClick: () => setMapMode("selected") },
+                  ]}
+                />
                 <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
                   <input
                     type="checkbox"
                     checked={showBbox}
                     onChange={(e) => setShowBbox(e.target.checked)}
                   />
-                  Show dataset bbox
+                  Show bbox
                 </label>
-              </div>
-            </DropdownMenu>
-            {mapScope && <span className="badge">map: {mapScope}</span>}
-            {showBbox && <span className="badge">bbox shown</span>}
+              </>
+            )}
             {mapLoading && <span className="badge">loading geometries...</span>}
             {mapTruncated && <span className="badge">not all geometries shown (limit reached)</span>}
             {bboxLoading && <span className="badge">computing bbox...</span>}
@@ -372,7 +357,7 @@ export default function Editor({
         )}
         <div className="spacer" />
         <DropdownMenu
-          label="Tools"
+          label="Dataset tools"
           items={[
             { label: "Validate file", onClick: () => setShowValidation(true) },
             { label: "Add column", onClick: () => setShowAddColumn(true) },
@@ -396,8 +381,8 @@ export default function Editor({
 
       {error && <div className="error-banner">{error}</div>}
 
-      {(mapScope || showBbox) && geometryColumn && (
-        <GeoMap features={mapScope ? mapFeatures : []} bbox={showBbox ? datasetBbox : null} />
+      {mapVisible && geometryColumn && (
+        <GeoMap features={mapFeatures} bbox={showBbox ? datasetBbox : null} />
       )}
 
       {schema && (

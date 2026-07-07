@@ -3,13 +3,14 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.config import settings
 from app.routers import columns, create_dataset, data, files, generate, merge, validate
 
 app = FastAPI(title="Parquet/GeoParquet Editor")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_allow_origins_list,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],

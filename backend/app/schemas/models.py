@@ -77,7 +77,9 @@ class GenerateRequest(BaseModel):
 class SaveRequest(BaseModel):
     """Request to save a file."""
 
-    legacy_int96_timestamps: bool = False
+    # None means "preserve whatever the original file used" (auto-detected —
+    # see OpenFile.uses_int96_timestamps); pass True/False to override it.
+    legacy_int96_timestamps: bool | None = None
 
 
 class SaveResponse(BaseModel):

@@ -55,21 +55,49 @@ def _is_geoparquet(path: Path) -> bool:
     return b"geo" in metadata
 
 
-def _load_dataframe(path: Path) -> tuple[pd.DataFrame, bool, str | None, str | None]:
-    """Load a parquet file into a DataFrame, returning the DataFrame,
-    whether it's GeoParquet, the geometry column name (if any), and the CRS (if any).
+def _uses_int96_timestamps(path: Path) -> bool:
+    """True if any column in the file is physically encoded as legacy INT96
+    (the parquet-mr/Spark convention), as opposed to modern INT64+logical-type.
     """
+    try:
+        schema = pq.read_metadata(path).schema
+    except Exception:  # pragma: no cover - best-effort detection
+        return False
+    return any(schema.column(i).physical_type == "INT96" for i in range(len(schema.names)))
+
+
+def _load_dataframe(path: Path) -> tuple[pd.DataFrame, bool, str | None, str | None, bool]:
+    """Load a parquet file into a DataFrame, returning the DataFrame,
+    whether it's GeoParquet, the geometry column name (if any), the CRS (if
+    any), and whether the file uses legacy INT96 timestamp encoding.
+    """
+
+    uses_int96 = _uses_int96_timestamps(path)
 
     is_geo = _is_geoparquet(path)
     if is_geo:
         gdf = gpd.read_parquet(path)
         geometry_column = gdf.geometry.name if hasattr(gdf, "geometry") else None
         crs = str(gdf.crs) if gdf.crs is not None else None
-        return gdf, True, geometry_column, crs
+
+        # geopandas silently omits columns it recognizes as GeoParquet
+        # "covering" metadata (e.g. a per-row bbox struct some writers —
+        # notably Spark/Sedona — attach for spatial predicate pushdown) from
+        # the returned GeoDataFrame. Left alone, saving would silently drop
+        # that column from the file even though the user never touched it.
+        # Carry any such columns forward verbatim so nothing is lost.
+        raw_columns = pq.read_schema(path).names
+        missing = [c for c in raw_columns if c not in gdf.columns]
+        if missing:
+            extra = pq.read_table(path, columns=missing).to_pandas()
+            for col in missing:
+                gdf[col] = extra[col].values
+
+        return gdf, True, geometry_column, crs, uses_int96
 
     df = pd.read_parquet(path, engine="pyarrow")
 
-    return df, False, None, None
+    return df, False, None, None, uses_int96
 
 
 def open_file(file_id: str) -> OpenFile:
@@ -83,7 +111,7 @@ def open_file(file_id: str) -> OpenFile:
     if record is None:
         raise ParquetServiceError(f"Unknown file_id: {file_id}")
 
-    df, is_geo, geometry_column, crs = _load_dataframe(record.path)
+    df, is_geo, geometry_column, crs, uses_int96 = _load_dataframe(record.path)
 
     kinds = {
         col: column_kind(df[col], is_geometry_col=(is_geo and col == geometry_column))
@@ -91,11 +119,34 @@ def open_file(file_id: str) -> OpenFile:
     }
 
     entry = OpenFile(
-        df=df, is_geo=is_geo, geometry_column=geometry_column, crs=crs, kinds=kinds
+        df=df,
+        is_geo=is_geo,
+        geometry_column=geometry_column,
+        crs=crs,
+        kinds=kinds,
+        uses_int96_timestamps=uses_int96,
     )
     cache.set(file_id, entry)
 
     return entry
+
+
+def hashable_columns(df: pd.DataFrame) -> list[str]:
+    """Columns whose values can be hashed (needed for drop_duplicates()/
+    duplicated()). Struct/list-typed parquet columns (e.g. a GeoParquet
+    "covering" bbox struct — see `_load_dataframe`) come through as object
+    dtype holding dict/list values, which aren't hashable.
+    """
+    hashable = []
+    for col in df.columns:
+        if df[col].dtype != object:
+            hashable.append(col)
+            continue
+        sample = df[col].dropna().head(20)
+        if any(isinstance(v, (dict, list)) for v in sample):
+            continue
+        hashable.append(col)
+    return hashable
 
 
 def get_schema(file_id: str) -> dict[str, Any]:
@@ -487,13 +538,22 @@ def fill_nulls(file_id: str, column: str, strategy: str) -> int:
     return n_missing
 
 
-def save_file(file_id: str, legacy_int96_timestamps: bool = False) -> FileRecord:
-    """Save the given file back to its original path, using the legacy int96"""
+def save_file(file_id: str, legacy_int96_timestamps: bool | None = None) -> FileRecord:
+    """Save the given file back to its original path.
+
+    Timestamp encoding (legacy INT96 vs. modern INT64) defaults to whatever
+    the original file used (`entry.uses_int96_timestamps`, detected at open
+    time) so a save doesn't silently change it — this matters a lot for
+    schema-strict downstream readers like Spark, which choke on a mismatch.
+    Pass `legacy_int96_timestamps` explicitly to override that default.
+    """
 
     entry = open_file(file_id)
     record = store.get(file_id)
     if record is None:
         raise ParquetServiceError(f"Unknown file_id: {file_id}")
+
+    use_int96 = entry.uses_int96_timestamps if legacy_int96_timestamps is None else legacy_int96_timestamps
 
     can_write_geo = (
         entry.is_geo
@@ -501,13 +561,18 @@ def save_file(file_id: str, legacy_int96_timestamps: bool = False) -> FileRecord
         and entry.geometry_column in entry.df.columns
     )
     if can_write_geo:
-        entry.df.to_parquet(record.path, engine="pyarrow", compression="snappy")
+        entry.df.to_parquet(
+            record.path,
+            engine="pyarrow",
+            compression="snappy",
+            use_deprecated_int96_timestamps=use_int96,
+        )
     else:
         entry.df.to_parquet(
             record.path,
             engine="pyarrow",
             compression="snappy",
-            use_deprecated_int96_timestamps=legacy_int96_timestamps,
+            use_deprecated_int96_timestamps=use_int96,
         )
 
     entry.dirty = False
@@ -543,7 +608,12 @@ def export_file(file_id: str, fmt: str) -> tuple[bytes, str, str]:
         return buf.getvalue().encode("utf-8"), "text/csv", f"{base_name}.csv"
 
     buf = io.BytesIO()
-    export_df.to_parquet(buf, engine="pyarrow", compression="snappy")
+    export_df.to_parquet(
+        buf,
+        engine="pyarrow",
+        compression="snappy",
+        use_deprecated_int96_timestamps=entry.uses_int96_timestamps,
+    )
 
     return buf.getvalue(), "application/octet-stream", f"{base_name}.parquet"
 

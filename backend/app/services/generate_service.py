@@ -1,8 +1,3 @@
-"""Value generation for columns, generalizing the min/max random-int approach
-from the original ``parquet_col_generator.py`` script to every column kind
-supported by the editor.
-"""
-
 from __future__ import annotations
 
 from typing import Any
@@ -40,7 +35,7 @@ def _generate_float(params: dict[str, Any], n: int) -> np.ndarray:
     if lo > hi:
         raise ParquetServiceError("min must be <= max")
 
-    return np.random.uniform(lo, hi, size=n)
+    return np.round(np.random.uniform(lo, hi, size=n), decimals=2)
 
 
 def _generate_bool(params: dict[str, Any], n: int) -> np.ndarray:

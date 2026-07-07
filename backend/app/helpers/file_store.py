@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 import shutil
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-STORAGE_FOLDER = "storage"
-DATA_DIR = Path(__file__).resolve().parent.parent.parent / STORAGE_FOLDER
+from app.config import settings
+
+# settings.storage_dir may be a relative folder name (resolved against
+# backend/, matching the historical default) or an absolute path if
+# explicitly configured via STORAGE_DIR in .env.
+_configured_storage_dir = Path(settings.storage_dir)
+DATA_DIR = (
+    _configured_storage_dir
+    if _configured_storage_dir.is_absolute()
+    else Path(__file__).resolve().parent.parent.parent / _configured_storage_dir
+)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 VALID_SUFFIXES = {".parquet", ".geoparquet"}
-
-SEP = "__"
 
 
 @dataclass
@@ -44,12 +50,11 @@ class FileStore:
                 continue
             if path.suffix.lower() not in VALID_SUFFIXES:
                 continue
-            if SEP not in path.name:
-                continue
 
-            file_id, _, original_name = path.name.partition(SEP)
-            self._files[file_id] = FileRecord(
-                file_id=file_id, filename=original_name, path=path
+            # The filename on disk *is* the file_id — no UUID prefix, so
+            # uploads keep their original name in storage.
+            self._files[path.name] = FileRecord(
+                file_id=path.name, filename=path.name, path=path
             )
 
     def list(self) -> list[FileRecord]:
@@ -74,12 +79,14 @@ class FileStore:
         if suffix not in VALID_SUFFIXES:
             raise ValueError(f"Unsupported file extension: {suffix}")
 
-        file_id = uuid.uuid4().hex
-        dest = self.directory / f"{file_id}{SEP}{original_name}"
+        dest = self.directory / original_name
+        if dest.exists():
+            raise ValueError(f"A file named '{original_name}' already exists")
+
         shutil.move(str(tmp_path), dest)
 
-        record = FileRecord(file_id=file_id, filename=original_name, path=dest)
-        self._files[file_id] = record
+        record = FileRecord(file_id=original_name, filename=original_name, path=dest)
+        self._files[original_name] = record
 
         return record
 

@@ -1,16 +1,18 @@
 services:
   backend:
     build: ./backend
+    env_file:
+      - ./.env
     ports:
-      - "18010:8000"
+      - "${BACKEND_PORT:-18010}:8000"
     volumes:
-      - ./backend/storage:/app/storage
+      - ./backend/${STORAGE_DIR:-storage}:/app/${STORAGE_DIR:-storage}
     restart: unless-stopped
 
   frontend:
     build: ./frontend
     ports:
-      - "18080:80"
+      - "${FRONTEND_PORT:-18080}:80"
     depends_on:
       - backend
     restart: unless-stopped

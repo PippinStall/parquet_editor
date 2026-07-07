@@ -13,7 +13,7 @@ from pathlib import Path
 import pandas as pd
 
 from app.helpers.file_store import FileRecord, store
-from app.services.parquet_service import ParquetServiceError, open_file
+from app.services.parquet_service import ParquetServiceError, hashable_columns, open_file
 
 
 def _coalesce_by_key(df: pd.DataFrame, key_columns: list[str]) -> pd.DataFrame:
@@ -48,6 +48,9 @@ def merge_files(
     entries = [open_file(fid) for fid in file_ids]
     geo_entries = [e for e in entries if e.is_geo and e.geometry_column]
     is_geo = len(geo_entries) > 0
+    # If any source file used legacy INT96 timestamps (the parquet-mr/Spark
+    # convention), keep using it for the merged output too — see save_file().
+    use_int96 = any(e.uses_int96_timestamps for e in entries)
 
     frames: list[pd.DataFrame] = []
     if is_geo:
@@ -80,7 +83,9 @@ def merge_files(
         if is_geo:
             merged = gpd.GeoDataFrame(merged, geometry=canonical_col, crs=canonical_crs)
     else:
-        merged = merged.drop_duplicates(ignore_index=True)
+        subset = hashable_columns(merged)
+        dedup_subset = subset if len(subset) < len(merged.columns) else None
+        merged = merged.drop_duplicates(subset=dedup_subset, ignore_index=True)
 
     suffix = ".geoparquet" if is_geo else ".parquet"
     filename = output_filename.strip()
@@ -91,8 +96,13 @@ def merge_files(
         tmp_path = Path(tmp.name)
 
     if is_geo:
-        merged.to_parquet(tmp_path, compression="snappy")
+        merged.to_parquet(tmp_path, compression="snappy", use_deprecated_int96_timestamps=use_int96)
     else:
-        merged.to_parquet(tmp_path, engine="pyarrow", compression="snappy")
+        merged.to_parquet(
+            tmp_path, engine="pyarrow", compression="snappy", use_deprecated_int96_timestamps=use_int96
+        )
 
-    return store.save_upload(filename, tmp_path)
+    try:
+        return store.save_upload(filename, tmp_path)
+    except ValueError as exc:
+        raise ParquetServiceError(str(exc)) from exc

@@ -103,6 +103,9 @@ def create_dataset(
         tmp_path = Path(tmp.name)
 
     df.to_parquet(tmp_path, engine="pyarrow", compression="snappy")
-    record = store.save_upload(filename, tmp_path)
+    try:
+        record = store.save_upload(filename, tmp_path)
+    except ValueError as exc:
+        raise ParquetServiceError(str(exc)) from exc
 
     return record, skipped

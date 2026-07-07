@@ -9,7 +9,7 @@ from typing import Any
 
 import numpy as np
 
-from app.services.parquet_service import open_file
+from app.services.parquet_service import hashable_columns, open_file
 
 
 def validate_file(file_id: str) -> dict[str, Any]:
@@ -19,12 +19,11 @@ def validate_file(file_id: str) -> dict[str, Any]:
     df = entry.df
     row_count = len(df)
 
-    try:
-        duplicate_rows = int(df.duplicated().sum())
-    except TypeError:
-        # Unhashable column values (rare) — skip the duplicate check rather
-        # than fail the whole report.
-        duplicate_rows = 0
+    # Struct/list-typed columns (e.g. a GeoParquet "covering" bbox struct)
+    # aren't hashable, so they're excluded from the duplicate-row comparison
+    # rather than failing the check outright.
+    subset = hashable_columns(df)
+    duplicate_rows = int(df.duplicated(subset=subset if len(subset) < len(df.columns) else None).sum())
 
     columns = []
     for col in df.columns:

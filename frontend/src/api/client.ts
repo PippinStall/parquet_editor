@@ -20,6 +20,13 @@ import type {
 
 const api = axios.create({ baseURL: "/api" });
 
+// file_id is the file's actual filename (see backend/app/helpers/file_store.py),
+// which can contain spaces or other characters that need escaping wherever
+// it's used as a URL path segment.
+function eid(fileId: string): string {
+  return encodeURIComponent(fileId);
+}
+
 export async function listFiles(): Promise<FileInfo[]> {
   const { data } = await api.get<FileInfo[]>("/files");
   return data;
@@ -35,15 +42,15 @@ export async function uploadFile(file: File): Promise<FileInfo> {
 }
 
 export async function deleteFile(fileId: string): Promise<void> {
-  await api.delete(`/files/${fileId}`);
+  await api.delete(`/files/${eid(fileId)}`);
 }
 
 export function downloadFileUrl(fileId: string): string {
-  return `/api/files/${fileId}/download`;
+  return `/api/files/${eid(fileId)}/download`;
 }
 
 export async function getSchema(fileId: string): Promise<SchemaResponse> {
-  const { data } = await api.get<SchemaResponse>(`/files/${fileId}/schema`);
+  const { data } = await api.get<SchemaResponse>(`/files/${eid(fileId)}/schema`);
   return data;
 }
 
@@ -60,7 +67,7 @@ export async function getRows(
   pageSize: number,
   options: GetRowsOptions = {},
 ): Promise<RowsResponse> {
-  const { data } = await api.get<RowsResponse>(`/files/${fileId}/rows`, {
+  const { data } = await api.get<RowsResponse>(`/files/${eid(fileId)}/rows`, {
     params: {
       page,
       page_size: pageSize,
@@ -79,7 +86,7 @@ export async function patchCell(
   column: string,
   value: unknown,
 ): Promise<void> {
-  await api.patch(`/files/${fileId}/cell`, {
+  await api.patch(`/files/${eid(fileId)}/cell`, {
     row_index: rowIndex,
     column,
     value,
@@ -91,7 +98,7 @@ export async function generateValues(
   request: GenerateRequest,
 ): Promise<GenerateResult> {
   const { data } = await api.post<GenerateResult>(
-    `/files/${fileId}/generate`,
+    `/files/${eid(fileId)}/generate`,
     request,
   );
   return data;
@@ -99,15 +106,17 @@ export async function generateValues(
 
 export async function saveFile(
   fileId: string,
-  legacyInt96Timestamps = false,
+  // Leave unset to preserve the original file's timestamp encoding
+  // (auto-detected server-side); pass true/false to force it.
+  legacyInt96Timestamps?: boolean,
 ): Promise<void> {
-  await api.post(`/files/${fileId}/save`, {
-    legacy_int96_timestamps: legacyInt96Timestamps,
+  await api.post(`/files/${eid(fileId)}/save`, {
+    legacy_int96_timestamps: legacyInt96Timestamps ?? null,
   });
 }
 
 export async function validateFile(fileId: string): Promise<ValidationReport> {
-  const { data } = await api.get<ValidationReport>(`/files/${fileId}/validate`);
+  const { data } = await api.get<ValidationReport>(`/files/${eid(fileId)}/validate`);
   return data;
 }
 
@@ -117,7 +126,7 @@ export async function fillNulls(
   strategy: FillStrategy,
 ): Promise<FillNullsResult> {
   const { data } = await api.post<FillNullsResult>(
-    `/files/${fileId}/columns/${encodeURIComponent(column)}/fill`,
+    `/files/${eid(fileId)}/columns/${encodeURIComponent(column)}/fill`,
     { strategy },
   );
   return data;
@@ -142,7 +151,7 @@ export async function addColumn(
   kind: ColumnKind,
   defaultValue: unknown = null,
 ): Promise<SchemaResponse> {
-  const { data } = await api.post<SchemaResponse>(`/files/${fileId}/columns`, {
+  const { data } = await api.post<SchemaResponse>(`/files/${eid(fileId)}/columns`, {
     name,
     kind,
     default: defaultValue,
@@ -155,21 +164,21 @@ export async function deleteColumn(
   columnName: string,
 ): Promise<SchemaResponse> {
   const { data } = await api.delete<SchemaResponse>(
-    `/files/${fileId}/columns/${encodeURIComponent(columnName)}`,
+    `/files/${eid(fileId)}/columns/${encodeURIComponent(columnName)}`,
   );
   return data;
 }
 
 export function exportFileUrl(fileId: string, format: ExportFormat): string {
-  return `/api/files/${fileId}/export?format=${format}`;
+  return `/api/files/${eid(fileId)}/export?format=${format}`;
 }
 
 export function exportSchemaUrl(fileId: string): string {
-  return `/api/files/${fileId}/schema/export`;
+  return `/api/files/${eid(fileId)}/schema/export`;
 }
 
 export async function getBbox(fileId: string): Promise<BBox> {
-  const { data } = await api.get<BBox>(`/files/${fileId}/bbox`);
+  const { data } = await api.get<BBox>(`/files/${eid(fileId)}/bbox`);
   return data;
 }
 
@@ -191,7 +200,7 @@ export async function getGeometries(
   scope: "all" | "selected",
   rowIndices?: number[],
 ): Promise<GeometriesResult> {
-  const { data } = await api.get(`/files/${fileId}/geometries`, {
+  const { data } = await api.get(`/files/${eid(fileId)}/geometries`, {
     params: {
       scope,
       row_indices: rowIndices?.length ? rowIndices.join(",") : undefined,
