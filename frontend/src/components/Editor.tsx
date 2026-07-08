@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   apiErrorMessage,
   deleteColumn,
+  deleteRow,
   downloadFileUrl,
   exportFileUrl,
   exportSchemaUrl,
@@ -22,6 +23,7 @@ import type {
   SortDir,
 } from "../types";
 import AddColumnDialog from "./AddColumnDialog";
+import ConfirmDialog from "./ConfirmDialog";
 import DataGrid from "./DataGrid";
 import DropdownMenu from "./DropdownMenu";
 import FilterDialog from "./FilterDialog";
@@ -81,6 +83,11 @@ export default function Editor({
 
   const [hiddenColumns, setHiddenColumns] = useState<Set<string>>(new Set());
   const [columnFilterText, setColumnFilterText] = useState("");
+
+  const [confirmDeleteColumn, setConfirmDeleteColumn] = useState<string | null>(null);
+  const [confirmDeleteRow, setConfirmDeleteRow] = useState<number | null>(null);
+  const [deletingColumn, setDeletingColumn] = useState(false);
+  const [deletingRow, setDeletingRow] = useState(false);
 
   // Debounce the free-text search box so we don't re-query on every keystroke.
   useEffect(() => {
@@ -236,9 +243,11 @@ export default function Editor({
     });
   };
 
-  const handleDeleteColumn = async (column: string) => {
-    if (!confirm(`Delete column "${column}"?`)) return;
+  const confirmDeleteColumnNow = async () => {
+    if (!confirmDeleteColumn) return;
+    const column = confirmDeleteColumn;
     setError(null);
+    setDeletingColumn(true);
     try {
       await deleteColumn(file.file_id, column);
       if (sortBy === column) setSortBy(undefined);
@@ -250,8 +259,33 @@ export default function Editor({
       });
       await loadSchema();
       await loadRows();
+      setConfirmDeleteColumn(null);
     } catch (err) {
       setError(apiErrorMessage(err));
+    } finally {
+      setDeletingColumn(false);
+    }
+  };
+
+  const confirmDeleteRowNow = async () => {
+    if (confirmDeleteRow === null) return;
+    const rowIndex = confirmDeleteRow;
+    setError(null);
+    setDeletingRow(true);
+    try {
+      await deleteRow(file.file_id, rowIndex);
+      setSelected((prev) => {
+        if (!prev.has(rowIndex)) return prev;
+        const next = new Set(prev);
+        next.delete(rowIndex);
+        return next;
+      });
+      await loadRows();
+      setConfirmDeleteRow(null);
+    } catch (err) {
+      setError(apiErrorMessage(err));
+    } finally {
+      setDeletingRow(false);
     }
   };
 
@@ -419,7 +453,8 @@ export default function Editor({
           sortBy={sortBy}
           sortDir={sortDir}
           onSortChange={handleSortChange}
-          onDeleteColumn={handleDeleteColumn}
+          onDeleteColumn={(column) => setConfirmDeleteColumn(column)}
+          onDeleteRow={(rowIndex) => setConfirmDeleteRow(rowIndex)}
         />
       )}
 
@@ -503,6 +538,26 @@ export default function Editor({
             setPage(0);
             setShowFilters(false);
           }}
+        />
+      )}
+
+      {confirmDeleteColumn && (
+        <ConfirmDialog
+          title="Delete column"
+          message={`Delete column "${confirmDeleteColumn}"? This cannot be undone.`}
+          busy={deletingColumn}
+          onCancel={() => setConfirmDeleteColumn(null)}
+          onConfirm={confirmDeleteColumnNow}
+        />
+      )}
+
+      {confirmDeleteRow !== null && (
+        <ConfirmDialog
+          title="Delete row"
+          message={`Delete row #${confirmDeleteRow}? This cannot be undone.`}
+          busy={deletingRow}
+          onCancel={() => setConfirmDeleteRow(null)}
+          onConfirm={confirmDeleteRowNow}
         />
       )}
     </div>

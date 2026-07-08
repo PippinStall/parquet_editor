@@ -479,6 +479,24 @@ def delete_column(file_id: str, name: str) -> None:
     entry.search_blob = None
 
 
+def delete_row(file_id: str, row_index: int) -> None:
+    """Delete a single row from the given file by its row index."""
+
+    entry = open_file(file_id)
+    if row_index < 0 or row_index >= len(entry.df):
+        raise ParquetServiceError(f"Row index out of range: {row_index}")
+
+    entry.df.drop(index=row_index, inplace=True)
+    # row_index is used elsewhere (edit_cell, get_rows, ...) as both a bounds
+    # check against len(df) and a .loc label, which only stays correct if the
+    # index remains a contiguous 0..len-1 RangeIndex after the drop.
+    entry.df.reset_index(drop=True, inplace=True)
+    if entry.geometry_column:
+        entry.bbox = None
+    entry.dirty = True
+    entry.search_blob = None
+
+
 def delete_null_columns(file_id: str) -> list[str]:
     """Delete all columns that are entirely null, returning the list of deleted column names."""
 

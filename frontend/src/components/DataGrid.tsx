@@ -21,6 +21,7 @@ export default function DataGrid({
   sortDir,
   onSortChange,
   onDeleteColumn,
+  onDeleteRow,
 }: {
   columns: ColumnInfo[];
   rows: RowRecord[];
@@ -33,6 +34,7 @@ export default function DataGrid({
   sortDir?: SortDir;
   onSortChange?: (column: string) => void;
   onDeleteColumn?: (column: string) => void;
+  onDeleteRow?: (rowIndex: number) => void;
 }) {
   const [editing, setEditing] = useState<EditingCell | null>(null);
 
@@ -98,7 +100,19 @@ export default function DataGrid({
                       onChange={() => onToggleSelect(rowIndex)}
                     />
                   </td>
-                  <td>{rowIndex}</td>
+                  <td>
+                    {rowIndex}
+                    {onDeleteRow && (
+                      <button
+                        className="danger"
+                        style={{ marginLeft: 6, padding: "0 6px", fontSize: 11 }}
+                        title="Delete row"
+                        onClick={() => onDeleteRow(rowIndex)}
+                      >
+                        ×
+                      </button>
+                    )}
+                  </td>
                   {columns.map((col) => {
                     const isEditing =
                       editing?.rowIndex === rowIndex && editing?.column === col.name;

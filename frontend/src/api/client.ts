@@ -98,6 +98,10 @@ export async function patchCell(
   });
 }
 
+export async function deleteRow(fileId: string, rowIndex: number): Promise<void> {
+  await api.delete(`/files/${eid(fileId)}/rows/${rowIndex}`);
+}
+
 export async function generateValues(
   fileId: string,
   request: GenerateRequest,

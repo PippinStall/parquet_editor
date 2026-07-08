@@ -16,6 +16,7 @@ from app.schemas.models import (
 )
 from app.services.parquet_service import (
     ParquetServiceError,
+    delete_row,
     edit_cell,
     export_file,
     get_bbox,
@@ -88,6 +89,18 @@ def patch_cell(file_id: str, edit: CellEdit) -> dict[str, bool]:
 
     try:
         edit_cell(file_id, edit.row_index, edit.column, edit.value)
+    except ParquetServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {"ok": True}
+
+
+@router.delete("/{file_id}/rows/{row_index}")
+def remove_row(file_id: str, row_index: int) -> dict[str, bool]:
+    """Delete a single row from a file by its row index."""
+
+    try:
+        delete_row(file_id, row_index)
     except ParquetServiceError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
