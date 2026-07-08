@@ -141,6 +141,12 @@ class FillNullsResult(BaseModel):
     filled_count: int
 
 
+class DeleteNullColumnsResult(BaseModel):
+    """Result of deleting all fully-null columns from a file."""
+
+    deleted_columns: list[str]
+
+
 class FilterSpec(BaseModel):
     """Specification for filtering rows in a file."""
 

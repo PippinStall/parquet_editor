@@ -63,10 +63,14 @@ def _uses_int96_timestamps(path: Path) -> bool:
         schema = pq.read_metadata(path).schema
     except Exception:  # pragma: no cover - best-effort detection
         return False
-    return any(schema.column(i).physical_type == "INT96" for i in range(len(schema.names)))
+    return any(
+        schema.column(i).physical_type == "INT96" for i in range(len(schema.names))
+    )
 
 
-def _load_dataframe(path: Path) -> tuple[pd.DataFrame, bool, str | None, str | None, bool]:
+def _load_dataframe(
+    path: Path,
+) -> tuple[pd.DataFrame, bool, str | None, str | None, bool]:
     """Load a parquet file into a DataFrame, returning the DataFrame,
     whether it's GeoParquet, the geometry column name (if any), the CRS (if
     any), and whether the file uses legacy INT96 timestamp encoding.
@@ -301,6 +305,7 @@ def _get_search_blob(entry: OpenFile) -> pd.Series:
             entry.search_blob = parts[0].str.cat(parts[1:], sep=" ", na_rep="")
         else:
             entry.search_blob = pd.Series("", index=df.index)
+
     return entry.search_blob
 
 
@@ -474,6 +479,30 @@ def delete_column(file_id: str, name: str) -> None:
     entry.search_blob = None
 
 
+def delete_null_columns(file_id: str) -> list[str]:
+    """Delete all columns that are entirely null, returning the list of deleted column names."""
+
+    entry = open_file(file_id)
+    if len(entry.df) == 0:
+        # Series.isna().all() is vacuously True on an empty column, which would
+        # otherwise make every column look "all null" and wipe the whole schema.
+        return []
+    null_cols = [col for col in entry.df.columns if entry.df[col].isna().all()]
+    if not null_cols:
+        return []
+
+    entry.df.drop(columns=null_cols, inplace=True)
+    for col in null_cols:
+        entry.kinds.pop(col, None)
+        if entry.geometry_column == col:
+            entry.geometry_column = None
+            entry.bbox = None
+    entry.dirty = True
+    entry.search_blob = None
+
+    return null_cols
+
+
 def fill_nulls(file_id: str, column: str, strategy: str) -> int:
     """Fill null values in `column` from its own existing values, using one
     of: mean/median (numeric & date/timestamp only), mode (most frequent
@@ -553,7 +582,11 @@ def save_file(file_id: str, legacy_int96_timestamps: bool | None = None) -> File
     if record is None:
         raise ParquetServiceError(f"Unknown file_id: {file_id}")
 
-    use_int96 = entry.uses_int96_timestamps if legacy_int96_timestamps is None else legacy_int96_timestamps
+    use_int96 = (
+        entry.uses_int96_timestamps
+        if legacy_int96_timestamps is None
+        else legacy_int96_timestamps
+    )
 
     can_write_geo = (
         entry.is_geo

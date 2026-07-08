@@ -2,11 +2,17 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
-from app.schemas.models import AddColumnRequest, FillNullsRequest, FillNullsResult
+from app.schemas.models import (
+    AddColumnRequest,
+    DeleteNullColumnsResult,
+    FillNullsRequest,
+    FillNullsResult,
+)
 from app.services.parquet_service import (
     ParquetServiceError,
     add_column,
     delete_column,
+    delete_null_columns,
     fill_nulls,
     get_schema,
 )
@@ -34,6 +40,17 @@ def remove_column(file_id: str, column_name: str) -> dict:
         return get_schema(file_id)
     except ParquetServiceError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/{file_id}/columns", response_model=DeleteNullColumnsResult)
+def remove_null_columns(file_id: str) -> DeleteNullColumnsResult:
+    """Remove all columns that are entirely null from a file."""
+
+    try:
+        deleted = delete_null_columns(file_id)
+    except ParquetServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return DeleteNullColumnsResult(deleted_columns=deleted)
 
 
 @router.post("/{file_id}/columns/{column_name}/fill", response_model=FillNullsResult)

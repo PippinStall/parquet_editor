@@ -4,6 +4,7 @@ import type {
   ColumnKind,
   CreateDatasetColumn,
   CreateDatasetResult,
+  DeleteNullColumnsResult,
   ExportFormat,
   FileInfo,
   FillNullsResult,
@@ -43,6 +44,10 @@ export async function uploadFile(file: File): Promise<FileInfo> {
 
 export async function deleteFile(fileId: string): Promise<void> {
   await api.delete(`/files/${eid(fileId)}`);
+}
+export async function duplicateFile(fileId: string): Promise<FileInfo> {
+  const { data } = await api.post<FileInfo>(`/files/${eid(fileId)}/duplicate`);
+  return data;
 }
 
 export function downloadFileUrl(fileId: string): string {
@@ -166,6 +171,11 @@ export async function deleteColumn(
   const { data } = await api.delete<SchemaResponse>(
     `/files/${eid(fileId)}/columns/${encodeURIComponent(columnName)}`,
   );
+  return data;
+}
+
+export async function deleteNullColumns(fileId: string): Promise<DeleteNullColumnsResult> {
+  const { data } = await api.delete<DeleteNullColumnsResult>(`/files/${eid(fileId)}/columns`);
   return data;
 }
 

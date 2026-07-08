@@ -29,6 +29,7 @@ import GenerateDialog from "./GenerateDialog";
 import GeoMap from "./GeoMap";
 import { useToast } from "./Toast";
 import ValidationDialog from "./ValidationDialog";
+import DeleteNullColumnsDialog from "./RemoveNullsDialog";
 
 const PAGE_SIZE = 50;
 
@@ -59,6 +60,7 @@ export default function Editor({
   const [showValidation, setShowValidation] = useState(false);
   const [showAddColumn, setShowAddColumn] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
+  const [showDeleteNullColumns, setShowDeleteNullColumns] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const [searchInput, setSearchInput] = useState("");
@@ -381,6 +383,7 @@ export default function Editor({
             { label: "Validate file", onClick: () => setShowValidation(true) },
             { label: "Add column", onClick: () => setShowAddColumn(true) },
             { label: "Generate values", onClick: () => setShowGenerate(true) },
+            { label: "Delete null columns", onClick: () => setShowDeleteNullColumns(true) },
           ]}
         />
         <DropdownMenu
@@ -471,6 +474,19 @@ export default function Editor({
           onDone={() => {
             setShowAddColumn(false);
             showToast("Column added.");
+            loadSchema();
+            loadRows();
+          }}
+        />
+      )}
+
+      {showDeleteNullColumns && (
+        <DeleteNullColumnsDialog
+          fileId={file.file_id}
+          onClose={() => setShowDeleteNullColumns(false)}
+          onDone={() => {
+            setShowDeleteNullColumns(false);
+            showToast("Null columns deleted.");
             loadSchema();
             loadRows();
           }}

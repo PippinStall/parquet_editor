@@ -96,3 +96,15 @@ def download_file(file_id: str) -> FileResponse:
     return FileResponse(
         record.path, filename=record.filename, media_type="application/octet-stream"
     )
+
+
+@router.post("/{file_id}/duplicate", response_model=FileInfo)
+def duplicate_file(file_id: str) -> FileInfo:
+    """Duplicate a file by its ID, creating a new file with a "_copy" postfix."""
+
+    try:
+        record = store.duplicate(file_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return file_info(record)

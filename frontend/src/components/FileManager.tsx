@@ -3,6 +3,7 @@ import {
   apiErrorMessage,
   deleteFile,
   downloadFileUrl,
+  duplicateFile,
   listFiles,
   uploadFile,
 } from "../api/client";
@@ -55,6 +56,15 @@ export default function FileManager({
       setError(apiErrorMessage(err));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const handleDuplicate = async (fileId: string) => {
+    try {
+      const duplicatedFile = await duplicateFile(fileId);
+      setFiles((prev) => [...prev, duplicatedFile]);
+    } catch (err) {
+      setError(apiErrorMessage(err));
     }
   };
 
@@ -167,6 +177,9 @@ export default function FileManager({
                 <a href={downloadFileUrl(f.file_id)}>
                   <button className="secondary">Download</button>
                 </a>
+                <button className="secondary" onClick={() => handleDuplicate(f.file_id)}>
+                  Duplicate
+                </button>
                 <button className="danger" onClick={() => handleDelete(f.file_id)}>
                   Delete
                 </button>

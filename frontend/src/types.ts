@@ -94,6 +94,10 @@ export interface FillNullsResult {
   filled_count: number;
 }
 
+export interface DeleteNullColumnsResult {
+  deleted_columns: string[];
+}
+
 export type FilterOp = "eq" | "ne" | "lt" | "lte" | "gt" | "gte" | "contains" | "startswith";
 
 export interface FilterSpec {

@@ -90,6 +90,29 @@ class FileStore:
 
         return record
 
+    def duplicate(self, file_id: str) -> FileRecord:
+        """Copy a file on disk under a new name (stem + "_copy" postfix, with an
+        incrementing number on further collisions) and register it as a new record."""
+
+        record = self._files.get(file_id)
+        if record is None:
+            raise ValueError(f"Unknown file_id: {file_id}")
+
+        stem, suffix = record.path.stem, record.path.suffix
+        candidate = f"{stem}_copy{suffix}"
+        n = 2
+        while (self.directory / candidate).exists():
+            candidate = f"{stem}_copy{n}{suffix}"
+            n += 1
+
+        dest = self.directory / candidate
+        shutil.copy2(record.path, dest)
+
+        new_record = FileRecord(file_id=candidate, filename=candidate, path=dest)
+        self._files[candidate] = new_record
+
+        return new_record
+
     def delete(self, file_id: str) -> bool:
         """Delete a file by its id. Returns True if the file was found and deleted, False otherwise."""
 
