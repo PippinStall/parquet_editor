@@ -487,7 +487,7 @@ export default function Editor({
           onClose={() => setShowGenerate(false)}
           onDone={() => {
             setShowGenerate(false);
-            showToast("Values generated.");
+            showToast("Values updated.");
             loadRows();
             if (showBbox) loadBbox();
           }}
@@ -495,11 +495,7 @@ export default function Editor({
       )}
 
       {showValidation && (
-        <ValidationDialog
-          fileId={file.file_id}
-          onClose={() => setShowValidation(false)}
-          onDataChanged={loadRows}
-        />
+        <ValidationDialog fileId={file.file_id} onClose={() => setShowValidation(false)} />
       )}
 
       {showAddColumn && (

@@ -100,6 +100,14 @@ class ColumnValidation(BaseModel):
     inf_count: int | None = None
     invalid_count: int | None = None
     empty_count: int | None = None
+    # Basic descriptive stats, computed from the column's own non-null values.
+    # None where not applicable to the column's kind (e.g. min/max for bool).
+    distinct_count: int | None = None
+    min_value: str | None = None
+    max_value: str | None = None
+    mean_value: str | None = None
+    top_value: str | None = None
+    top_value_count: int | None = None
 
 
 class ValidationReport(BaseModel):
@@ -108,6 +116,8 @@ class ValidationReport(BaseModel):
     file_id: str
     row_count: int
     duplicate_rows: int
+    is_geo: bool
+    kind_counts: dict[str, int]
     columns: list[ColumnValidation]
 
 

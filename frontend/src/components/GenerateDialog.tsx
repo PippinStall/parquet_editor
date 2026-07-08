@@ -1,7 +1,16 @@
-import { useState } from "react";
-import { apiErrorMessage, generateValues } from "../api/client";
-import type { BBox, ColumnInfo, GenerateColumnSpec, GeoFeature, RowRecord } from "../types";
+import { useEffect, useState } from "react";
+import { apiErrorMessage, fillNulls, generateValues, validateFile } from "../api/client";
+import type {
+  BBox,
+  ColumnInfo,
+  FillStrategy,
+  GenerateColumnSpec,
+  GeoFeature,
+  RowRecord,
+  ValidationReport,
+} from "../types";
 import GeoMap from "./GeoMap";
+import InfoPopover from "./InfoPopover";
 
 function rowsToFeatures(rows: RowRecord[], column: string): GeoFeature[] {
   return rows
@@ -10,6 +19,20 @@ function rowsToFeatures(rows: RowRecord[], column: string): GeoFeature[] {
 }
 
 type Draft = Record<string, string>;
+type FillMode = "generate" | "fill";
+
+const MEAN_MEDIAN_KINDS = new Set(["int", "float", "date", "timestamp"]);
+
+function strategyOptions(kind: string): { value: FillStrategy; label: string }[] {
+  const opts: { value: FillStrategy; label: string }[] = [];
+  if (MEAN_MEDIAN_KINDS.has(kind)) {
+    opts.push({ value: "mean", label: "mean" });
+    opts.push({ value: "median", label: "median" });
+  }
+  opts.push({ value: "mode", label: "most frequent value" });
+  opts.push({ value: "random", label: "random from existing values" });
+  return opts;
+}
 
 const KIND_LABEL: Record<string, string> = {
   int: "integer",
@@ -101,10 +124,35 @@ export default function GenerateDialog({
   const [error, setError] = useState<string | null>(null);
   const [mapForColumn, setMapForColumn] = useState<string | null>(null);
   const [columnSearch, setColumnSearch] = useState("");
+  const [report, setReport] = useState<ValidationReport | null>(null);
+  const [modeByColumn, setModeByColumn] = useState<Record<string, FillMode>>({});
+  const [fillStrategyByColumn, setFillStrategyByColumn] = useState<Record<string, FillStrategy>>({});
+
+  useEffect(() => {
+    validateFile(fileId)
+      .then(setReport)
+      .catch((err) => setError(apiErrorMessage(err)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fileId]);
 
   const visibleColumns = generatable.filter((c) =>
     c.name.toLowerCase().includes(columnSearch.trim().toLowerCase()),
   );
+
+  const nullInfoByColumn = new Map(report ? report.columns.map((c) => [c.name, c]) : []);
+
+  // "Fill missing values" is only meaningful when the column has at least one
+  // non-null value to derive mean/median/mode/bootstrap from, and at least
+  // one null to actually fill — otherwise only range-based generation applies.
+  const canFillColumn = (col: ColumnInfo): boolean => {
+    if (col.kind === "geometry" || !report) return false;
+    const info = nullInfoByColumn.get(col.name);
+    if (!info) return false;
+    return info.null_count > 0 && info.null_count < report.row_count;
+  };
+
+  const modeFor = (col: ColumnInfo): FillMode =>
+    canFillColumn(col) ? (modeByColumn[col.name] ?? "generate") : "generate";
 
   const toggleColumn = (name: string, checked: boolean) => {
     setSelectedColumns((prev) => {
@@ -157,32 +205,48 @@ export default function GenerateDialog({
       setError("Select at least one column");
       return;
     }
-    if (scope === "selected" && selectedRows.size === 0) {
+
+    const generateCols: ColumnInfo[] = [];
+    const fillCols: ColumnInfo[] = [];
+    for (const name of selectedColumns) {
+      const col = columns.find((c) => c.name === name)!;
+      if (modeFor(col) === "fill") fillCols.push(col);
+      else generateCols.push(col);
+    }
+
+    if (generateCols.length > 0 && scope === "selected" && selectedRows.size === 0) {
       setError("No rows selected — check some rows in the table, or choose 'All rows'");
       return;
     }
 
     const specs: GenerateColumnSpec[] = [];
-    for (const name of selectedColumns) {
-      const col = columns.find((c) => c.name === name)!;
-      const draft = drafts[name] ?? {};
+    for (const col of generateCols) {
+      const draft = drafts[col.name] ?? {};
       const validationError = validate(col, draft);
       if (validationError) {
         setError(validationError);
         return;
       }
-      specs.push({ name, kind: col.kind, params: buildParams(col, draft) });
+      specs.push({ name: col.name, kind: col.kind, params: buildParams(col, draft) });
     }
 
     setSubmitting(true);
     try {
-      await generateValues(fileId, {
-        target:
-          scope === "all"
-            ? { scope: "all", row_indices: [] }
-            : { scope: "selected", row_indices: Array.from(selectedRows) },
-        columns: specs,
-      });
+      if (specs.length > 0) {
+        await generateValues(fileId, {
+          target:
+            scope === "all"
+              ? { scope: "all", row_indices: [] }
+              : { scope: "selected", row_indices: Array.from(selectedRows) },
+          columns: specs,
+        });
+      }
+      // Fill nulls always targets every missing value in the whole file — it
+      // has no concept of a row scope, unlike generate.
+      for (const col of fillCols) {
+        const strategy = fillStrategyByColumn[col.name] ?? strategyOptions(col.kind)[0].value;
+        await fillNulls(fileId, col.name, strategy);
+      }
       onDone();
     } catch (err) {
       setError(apiErrorMessage(err));
@@ -194,7 +258,31 @@ export default function GenerateDialog({
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal modal-flex" onClick={(e) => e.stopPropagation()}>
-        <h2>Auto-generate values</h2>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <h2 style={{ margin: 0 }}>Auto-generate values</h2>
+          <InfoPopover>
+            <p style={{ margin: "0 0 8px" }}>
+              <strong>Generate new values</strong> overwrites every row in the chosen scope with
+              fresh random values:
+            </p>
+            <ul style={{ margin: "0 0 10px", paddingLeft: 18 }}>
+              <li>integer / float — random number between min and max</li>
+              <li>string — random pick from your comma-separated list</li>
+              <li>boolean — random true/false, weighted by the % you set</li>
+              <li>date / date &amp; time — random point within the from/to range</li>
+              <li>geometry — random point inside the bbox (draw it on the map, or type it)</li>
+            </ul>
+            <p style={{ margin: "0 0 8px" }}>
+              <strong>Fill missing values only</strong> (columns that already have some data)
+              leaves existing values untouched and only fills the nulls, using:
+            </p>
+            <ul style={{ margin: 0, paddingLeft: 18 }}>
+              <li>mean / median — numeric or date columns only; from the column's own values</li>
+              <li>most frequent value — the column's mode</li>
+              <li>random from existing values — bootstrap-sampled, preserving the distribution</li>
+            </ul>
+          </InfoPopover>
+        </div>
         {error && <div className="error-banner">{error}</div>}
 
         <div className="field" style={{ marginBottom: 12 }}>
@@ -254,7 +342,60 @@ export default function GenerateDialog({
                   <span className="badge">{KIND_LABEL[col.kind] ?? col.kind}</span>
                 </label>
 
-                {isSelected && (
+                {isSelected && canFillColumn(col) && (
+                  <div className="params-row" style={{ marginBottom: 4 }}>
+                    <label>
+                      <input
+                        type="radio"
+                        checked={modeFor(col) === "generate"}
+                        onChange={() =>
+                          setModeByColumn((prev) => ({ ...prev, [col.name]: "generate" }))
+                        }
+                      />{" "}
+                      Generate new values
+                    </label>
+                    <label>
+                      <input
+                        type="radio"
+                        checked={modeFor(col) === "fill"}
+                        onChange={() =>
+                          setModeByColumn((prev) => ({ ...prev, [col.name]: "fill" }))
+                        }
+                      />{" "}
+                      Fill missing values only ({nullInfoByColumn.get(col.name)?.null_count} missing)
+                    </label>
+                  </div>
+                )}
+
+                {isSelected && modeFor(col) === "fill" && (
+                  <div className="params-row">
+                    <span className="field">
+                      Strategy
+                      <select
+                        value={fillStrategyByColumn[col.name] ?? strategyOptions(col.kind)[0].value}
+                        onChange={(e) =>
+                          setFillStrategyByColumn((prev) => ({
+                            ...prev,
+                            [col.name]: e.target.value as FillStrategy,
+                          }))
+                        }
+                      >
+                        {strategyOptions(col.kind).map((o) => (
+                          <option key={o.value} value={o.value}>
+                            {o.label}
+                          </option>
+                        ))}
+                      </select>
+                    </span>
+                    {scope === "selected" && (
+                      <span style={{ color: "#9aa4b2", fontSize: 12, alignSelf: "center" }}>
+                        Fills missing values across the whole file, regardless of the row scope above.
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {isSelected && modeFor(col) === "generate" && (
                   <div className="params-row">
                     {(col.kind === "int" || col.kind === "float") && (
                       <>
@@ -389,7 +530,7 @@ export default function GenerateDialog({
             Cancel
           </button>
           <button onClick={handleSubmit} disabled={submitting}>
-            {submitting ? "Generating..." : "Generate"}
+            {submitting ? "Working..." : "Apply"}
           </button>
         </div>
       </div>

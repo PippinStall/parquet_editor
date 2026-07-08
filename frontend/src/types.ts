@@ -77,12 +77,20 @@ export interface ColumnValidation {
   inf_count: number | null;
   invalid_count: number | null;
   empty_count: number | null;
+  distinct_count: number | null;
+  min_value: string | null;
+  max_value: string | null;
+  mean_value: string | null;
+  top_value: string | null;
+  top_value_count: number | null;
 }
 
 export interface ValidationReport {
   file_id: string;
   row_count: number;
   duplicate_rows: number;
+  is_geo: boolean;
+  kind_counts: Record<string, number>;
   columns: ColumnValidation[];
 }
 

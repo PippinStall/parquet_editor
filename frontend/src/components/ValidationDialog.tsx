@@ -1,80 +1,73 @@
 import { useEffect, useState } from "react";
-import { apiErrorMessage, fillNulls, validateFile } from "../api/client";
-import type { ColumnKind, FillStrategy, ValidationReport } from "../types";
-import { useToast } from "./Toast";
-
-const MEAN_MEDIAN_KINDS = new Set<ColumnKind>(["int", "float", "date", "timestamp"]);
-
-function strategyOptions(kind: ColumnKind): { value: FillStrategy; label: string }[] {
-  const opts: { value: FillStrategy; label: string }[] = [];
-  if (MEAN_MEDIAN_KINDS.has(kind)) {
-    opts.push({ value: "mean", label: "mean" });
-    opts.push({ value: "median", label: "median" });
-  }
-  opts.push({ value: "mode", label: "most frequent value" });
-  opts.push({ value: "random", label: "random from existing values" });
-  return opts;
-}
+import { apiErrorMessage, validateFile } from "../api/client";
+import type { ValidationReport } from "../types";
+import InfoPopover from "./InfoPopover";
 
 export default function ValidationDialog({
   fileId,
   onClose,
-  onDataChanged,
 }: {
   fileId: string;
   onClose: () => void;
-  onDataChanged?: () => void;
 }) {
-  const { showToast } = useToast();
   const [report, setReport] = useState<ValidationReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [strategyByColumn, setStrategyByColumn] = useState<Record<string, FillStrategy>>({});
-  const [fillingColumn, setFillingColumn] = useState<string | null>(null);
 
-  const loadReport = () => {
+  useEffect(() => {
     setLoading(true);
-    return validateFile(fileId)
+    validateFile(fileId)
       .then(setReport)
       .catch((err) => setError(apiErrorMessage(err)))
       .finally(() => setLoading(false));
-  };
-
-  useEffect(() => {
-    loadReport();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fileId]);
-
-  const handleFill = async (column: string, kind: ColumnKind) => {
-    const strategy = strategyByColumn[column] ?? strategyOptions(kind)[0].value;
-    setError(null);
-    setFillingColumn(column);
-    try {
-      const result = await fillNulls(fileId, column, strategy);
-      showToast(`"${column}": filled ${result.filled_count} value(s)`);
-      await loadReport();
-      onDataChanged?.();
-    } catch (err) {
-      setError(apiErrorMessage(err));
-    } finally {
-      setFillingColumn(null);
-    }
-  };
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" style={{ width: "min(1200px, 94vw)" }} onClick={(e) => e.stopPropagation()}>
-        <h2>Validate file</h2>
+      <div className="modal" style={{ width: "min(1300px, 96vw)" }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+           <InfoPopover>
+            <p style={{ margin: "0 0 8px" }}>
+              <strong>Distinct</strong> — number of distinct non-null values.
+            </p>
+            <p style={{ margin: "0 0 8px" }}>
+              <strong>Min / Max / Mean</strong> — computed from the column's own non-null values;
+              only shown for numeric and date/time columns (and min/max for strings, lexically).
+            </p>
+            <p style={{ margin: "0 0 8px" }}>
+              <strong>Most frequent</strong> — the most common non-null value, and how many rows
+              have it.
+            </p>
+            <p style={{ margin: 0 }}>
+              <strong>Inf / Invalid geometries / Empty geometries</strong> — kind-specific checks:
+              infinite floats, and geometries that fail a validity check or have no coordinates.
+            </p>
+          </InfoPopover>
+          <h2 style={{ margin: "0 0 4px" }}>Validate file</h2>
+        </div>
         {error && <div className="error-banner">{error}</div>}
         {loading && <div style={{ color: "#9aa4b2" }}>Validating...</div>}
 
         {report && (
           <>
-            <p>
-              Rows: <strong>{report.row_count}</strong> · Exact duplicate rows:{" "}
-              <strong>{report.duplicate_rows}</strong>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 8 }}>
+              <span className="badge">{report.row_count} rows</span>
+              <span className="badge">{report.columns.length} columns</span>
+              <span className="badge">{report.duplicate_rows} exact duplicate rows</span>
+              <span className="badge">{report.is_geo ? "geoparquet" : "parquet"}</span>
+              {Object.entries(report.kind_counts)
+                .sort((a, b) => b[1] - a[1])
+                .map(([kind, count]) => (
+                  <span className="badge" key={kind}>
+                    {count}× {kind}
+                  </span>
+                ))}
+            </div>
+            <p style={{ color: "#9aa4b2", fontSize: 13 }}>
+              To fill missing values, use "Generate values" — columns with existing data offer a
+              "fill missing values only" option there.
             </p>
-            <div className="grid-wrapper" style={{ maxHeight: "50vh" }}>
+            <div className="grid-wrapper" style={{ maxHeight: "55vh" }}>
               <table className="data-grid">
                 <thead>
                   <tr>
@@ -82,62 +75,37 @@ export default function ValidationDialog({
                     <th>Type</th>
                     <th>Null</th>
                     <th>Null %</th>
+                    <th>Distinct</th>
+                    <th>Min</th>
+                    <th>Max</th>
+                    <th>Mean</th>
+                    <th>Most frequent</th>
                     <th>Inf</th>
                     <th>Invalid geometries</th>
                     <th>Empty geometries</th>
-                    <th>Fill nulls</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {report.columns.map((c) => {
-                    const fillable =
-                      c.kind !== "geometry" && c.null_count > 0 && c.null_count < report.row_count;
-                    const options = strategyOptions(c.kind);
-                    const currentStrategy = strategyByColumn[c.name] ?? options[0].value;
-                    return (
-                      <tr key={c.name}>
-                        <td>{c.name}</td>
-                        <td>
-                          <span className="badge">{c.kind}</span>
-                        </td>
-                        <td>{c.null_count}</td>
-                        <td>{c.null_percentage}%</td>
-                        <td>{c.inf_count ?? "—"}</td>
-                        <td>{c.invalid_count ?? "—"}</td>
-                        <td>{c.empty_count ?? "—"}</td>
-                        <td>
-                          {fillable ? (
-                            <div style={{ display: "flex", gap: 6 }}>
-                              <select
-                                value={currentStrategy}
-                                onChange={(e) =>
-                                  setStrategyByColumn((prev) => ({
-                                    ...prev,
-                                    [c.name]: e.target.value as FillStrategy,
-                                  }))
-                                }
-                              >
-                                {options.map((o) => (
-                                  <option key={o.value} value={o.value}>
-                                    {o.label}
-                                  </option>
-                                ))}
-                              </select>
-                              <button
-                                className="secondary"
-                                disabled={fillingColumn === c.name}
-                                onClick={() => handleFill(c.name, c.kind)}
-                              >
-                                {fillingColumn === c.name ? "..." : "Fill"}
-                              </button>
-                            </div>
-                          ) : (
-                            <span style={{ color: "#9aa4b2" }}>—</span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
+                  {report.columns.map((c) => (
+                    <tr key={c.name}>
+                      <td>{c.name}</td>
+                      <td>
+                        <span className="badge">{c.kind}</span>
+                      </td>
+                      <td>{c.null_count}</td>
+                      <td>{c.null_percentage}%</td>
+                      <td>{c.distinct_count ?? "—"}</td>
+                      <td>{c.min_value ?? "—"}</td>
+                      <td>{c.max_value ?? "—"}</td>
+                      <td>{c.mean_value ?? "—"}</td>
+                      <td>
+                        {c.top_value !== null ? `${c.top_value} (×${c.top_value_count})` : "—"}
+                      </td>
+                      <td>{c.inf_count ?? "—"}</td>
+                      <td>{c.invalid_count ?? "—"}</td>
+                      <td>{c.empty_count ?? "—"}</td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
