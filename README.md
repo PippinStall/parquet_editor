@@ -4,6 +4,8 @@ A web service for viewing and editing `.parquet`/`.geoparquet` files: manual cel
 that respects each column's type, auto-generation of values by range/list, and viewing
 geoparquet geometries on a map (Leaflet).
 
+![Screenshot](docs/screen.png)
+
 ## Stack
 
 - **Backend**: FastAPI, pandas/pyarrow (plain parquet), geopandas/shapely (geoparquet).
