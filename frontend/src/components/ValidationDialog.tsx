@@ -43,7 +43,7 @@ export default function ValidationDialog({
               infinite floats, and geometries that fail a validity check or have no coordinates.
             </p>
           </InfoPopover>
-          <h2 style={{ margin: "0 0 4px" }}>Validate file</h2>
+          <h2 style={{ margin: "0 0 4px" }}>Dataset Analytics</h2>
         </div>
         {error && <div className="error-banner">{error}</div>}
         {loading && <div style={{ color: "#9aa4b2" }}>Validating...</div>}

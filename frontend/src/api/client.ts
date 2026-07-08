@@ -13,6 +13,7 @@ import type {
   GenerateRequest,
   GenerateResult,
   GeometriesResult,
+  RoundFloatsResult,
   RowsResponse,
   SchemaResponse,
   SortDir,
@@ -180,6 +181,14 @@ export async function deleteColumn(
 
 export async function deleteNullColumns(fileId: string): Promise<DeleteNullColumnsResult> {
   const { data } = await api.delete<DeleteNullColumnsResult>(`/files/${eid(fileId)}/columns`);
+  return data;
+}
+
+export async function roundFloats(fileId: string, decimals: number): Promise<RoundFloatsResult> {
+  const { data } = await api.post<RoundFloatsResult>(
+    `/files/${eid(fileId)}/columns/round-floats`,
+    { decimals },
+  );
   return data;
 }
 

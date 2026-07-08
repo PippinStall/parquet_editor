@@ -29,6 +29,7 @@ import DropdownMenu from "./DropdownMenu";
 import FilterDialog from "./FilterDialog";
 import GenerateDialog from "./GenerateDialog";
 import GeoMap from "./GeoMap";
+import RoundFloatsDialog from "./RoundFloatsDialog";
 import { useToast } from "./Toast";
 import ValidationDialog from "./ValidationDialog";
 import DeleteNullColumnsDialog from "./RemoveNullsDialog";
@@ -63,6 +64,7 @@ export default function Editor({
   const [showAddColumn, setShowAddColumn] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
   const [showDeleteNullColumns, setShowDeleteNullColumns] = useState(false);
+  const [showRoundFloats, setShowRoundFloats] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const [searchInput, setSearchInput] = useState("");
@@ -414,10 +416,11 @@ export default function Editor({
         <DropdownMenu
           label="Dataset tools"
           items={[
-            { label: "Validate file", onClick: () => setShowValidation(true) },
+            { label: "Analytics", onClick: () => setShowValidation(true) },
             { label: "Add column", onClick: () => setShowAddColumn(true) },
             { label: "Generate values", onClick: () => setShowGenerate(true) },
             { label: "Delete null columns", onClick: () => setShowDeleteNullColumns(true) },
+            { label: "Round float columns", onClick: () => setShowRoundFloats(true) },
           ]}
         />
         <DropdownMenu
@@ -519,6 +522,22 @@ export default function Editor({
             setShowDeleteNullColumns(false);
             showToast("Null columns deleted.");
             loadSchema();
+            loadRows();
+          }}
+        />
+      )}
+
+      {showRoundFloats && (
+        <RoundFloatsDialog
+          fileId={file.file_id}
+          onClose={() => setShowRoundFloats(false)}
+          onDone={(roundedColumns) => {
+            setShowRoundFloats(false);
+            showToast(
+              roundedColumns.length > 0
+                ? `Rounded ${roundedColumns.length} float column(s).`
+                : "No float columns to round.",
+            );
             loadRows();
           }}
         />

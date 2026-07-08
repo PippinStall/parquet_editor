@@ -7,6 +7,8 @@ from app.schemas.models import (
     DeleteNullColumnsResult,
     FillNullsRequest,
     FillNullsResult,
+    RoundFloatsRequest,
+    RoundFloatsResult,
 )
 from app.services.parquet_service import (
     ParquetServiceError,
@@ -15,6 +17,7 @@ from app.services.parquet_service import (
     delete_null_columns,
     fill_nulls,
     get_schema,
+    round_floats,
 )
 
 router = APIRouter(prefix="/api/files", tags=["columns"])
@@ -51,6 +54,17 @@ def remove_null_columns(file_id: str) -> DeleteNullColumnsResult:
     except ParquetServiceError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return DeleteNullColumnsResult(deleted_columns=deleted)
+
+
+@router.post("/{file_id}/columns/round-floats", response_model=RoundFloatsResult)
+def round_float_columns(file_id: str, request: RoundFloatsRequest) -> RoundFloatsResult:
+    """Round all float columns in a file to a given number of decimal places."""
+
+    try:
+        rounded = round_floats(file_id, request.decimals)
+    except ParquetServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return RoundFloatsResult(decimals=request.decimals, rounded_columns=rounded)
 
 
 @router.post("/{file_id}/columns/{column_name}/fill", response_model=FillNullsResult)

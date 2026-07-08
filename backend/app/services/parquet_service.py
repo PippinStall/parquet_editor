@@ -521,6 +521,26 @@ def delete_null_columns(file_id: str) -> list[str]:
     return null_cols
 
 
+def round_floats(file_id: str, decimals: int) -> list[str]:
+    """Round every float-kind column to the given number of decimal places,
+    returning the list of columns that were rounded."""
+
+    entry = open_file(file_id)
+    float_cols = [col for col, kind in entry.kinds.items() if kind == "float"]
+    if not float_cols:
+        return []
+
+    for col in float_cols:
+        col_values = entry.df[col]
+        if len(str(col_values).split(".")[1]) > decimals:
+            entry.df[col] = col_values.round(decimals)
+
+    entry.dirty = True
+    entry.search_blob = None
+
+    return float_cols
+
+
 def fill_nulls(file_id: str, column: str, strategy: str) -> int:
     """Fill null values in `column` from its own existing values, using one
     of: mean/median (numeric & date/timestamp only), mode (most frequent

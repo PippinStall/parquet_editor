@@ -157,6 +157,19 @@ class DeleteNullColumnsResult(BaseModel):
     deleted_columns: list[str]
 
 
+class RoundFloatsRequest(BaseModel):
+    """Request to round all float columns to a given number of decimal places."""
+
+    decimals: int
+
+
+class RoundFloatsResult(BaseModel):
+    """Result of rounding all float columns in a file."""
+
+    decimals: int
+    rounded_columns: list[str]
+
+
 class FilterSpec(BaseModel):
     """Specification for filtering rows in a file."""
 

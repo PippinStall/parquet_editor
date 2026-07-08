@@ -106,6 +106,11 @@ export interface DeleteNullColumnsResult {
   deleted_columns: string[];
 }
 
+export interface RoundFloatsResult {
+  decimals: number;
+  rounded_columns: string[];
+}
+
 export type FilterOp = "eq" | "ne" | "lt" | "lte" | "gt" | "gte" | "contains" | "startswith";
 
 export interface FilterSpec {
