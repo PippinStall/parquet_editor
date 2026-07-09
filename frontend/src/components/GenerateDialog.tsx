@@ -48,7 +48,17 @@ const KIND_LABEL: Record<string, string> = {
 function buildParams(col: ColumnInfo, draft: Draft): Record<string, unknown> {
   switch (col.kind) {
     case "int":
+      return { min: Number(draft.min), max: Number(draft.max) };
     case "float":
+      if ((draft.floatMode ?? "range") === "choices") {
+        return {
+          choices: (draft.choices ?? "")
+            .split(",")
+            .map((s) => s.trim())
+            .filter((s) => s.length > 0)
+            .map(Number),
+        };
+      }
       return { min: Number(draft.min), max: Number(draft.max) };
     case "bool":
       return { true_ratio: Number(draft.true_ratio ?? "50") / 100 };
@@ -77,7 +87,22 @@ function buildParams(col: ColumnInfo, draft: Draft): Record<string, unknown> {
 function validate(col: ColumnInfo, draft: Draft): string | null {
   switch (col.kind) {
     case "int":
+      if (draft.min === undefined || draft.max === undefined || draft.min === "" || draft.max === "")
+        return `${col.name}: please provide min and max`;
+      if (Number(draft.min) > Number(draft.max)) return `${col.name}: min must be <= max`;
+      return null;
     case "float":
+      if ((draft.floatMode ?? "range") === "choices") {
+        const parts = (draft.choices ?? "")
+          .split(",")
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0);
+        if (parts.length === 0)
+          return `${col.name}: please provide a comma-separated list of numbers`;
+        if (parts.some((p) => Number.isNaN(Number(p))))
+          return `${col.name}: choices must all be numbers`;
+        return null;
+      }
       if (draft.min === undefined || draft.max === undefined || draft.min === "" || draft.max === "")
         return `${col.name}: please provide min and max`;
       if (Number(draft.min) > Number(draft.max)) return `${col.name}: min must be <= max`;
@@ -266,7 +291,12 @@ export default function GenerateDialog({
               fresh random values:
             </p>
             <ul style={{ margin: "0 0 10px", paddingLeft: 18 }}>
-              <li>integer / float — random number between min and max</li>
+              <li>integer — random number between min and max</li>
+              <li>
+                float — random number between min and max, or (switch to "Fixed set of
+                values") a random pick from a comma-separated list of numbers, e.g. coded
+                conventions like Geotab's DiagnosticGearPositionId
+              </li>
               <li>string — random pick from your comma-separated list</li>
               <li>boolean — random true/false, weighted by the % you set</li>
               <li>date / date &amp; time — random point within the from/to range</li>
@@ -397,7 +427,7 @@ export default function GenerateDialog({
 
                 {isSelected && modeFor(col) === "generate" && (
                   <div className="params-row">
-                    {(col.kind === "int" || col.kind === "float") && (
+                    {col.kind === "int" && (
                       <>
                         <span className="field">
                           min
@@ -416,6 +446,61 @@ export default function GenerateDialog({
                           />
                         </span>
                       </>
+                    )}
+
+                    {col.kind === "float" && (
+                      <div style={{ width: "100%" }}>
+                        <div style={{ display: "flex", gap: 16, marginBottom: 6 }}>
+                          <label>
+                            <input
+                              type="radio"
+                              checked={(draft.floatMode ?? "range") === "range"}
+                              onChange={() => updateDraft(col.name, "floatMode", "range")}
+                            />{" "}
+                            Range
+                          </label>
+                          <label>
+                            <input
+                              type="radio"
+                              checked={draft.floatMode === "choices"}
+                              onChange={() => updateDraft(col.name, "floatMode", "choices")}
+                            />{" "}
+                            Fixed set of values
+                          </label>
+                        </div>
+                        {(draft.floatMode ?? "range") === "range" ? (
+                          <div className="params-row">
+                            <span className="field">
+                              min
+                              <input
+                                type="number"
+                                value={draft.min ?? ""}
+                                onChange={(e) => updateDraft(col.name, "min", e.target.value)}
+                              />
+                            </span>
+                            <span className="field">
+                              max
+                              <input
+                                type="number"
+                                value={draft.max ?? ""}
+                                onChange={(e) => updateDraft(col.name, "max", e.target.value)}
+                              />
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="field" style={{ flex: 1 }}>
+                            comma-separated list of numbers — e.g. coded conventions like
+                            Geotab's DiagnosticGearPositionId: 126=Park, 127=Drive, -1=Reverse,
+                            0=Neutral, 1..n=forward gears
+                            <textarea
+                              rows={2}
+                              placeholder="-1, 0, 1, 2, 3, 126, 127"
+                              value={draft.choices ?? ""}
+                              onChange={(e) => updateDraft(col.name, "choices", e.target.value)}
+                            />
+                          </span>
+                        )}
+                      </div>
                     )}
 
                     {col.kind === "bool" && (

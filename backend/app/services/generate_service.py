@@ -29,7 +29,20 @@ def _generate_int(params: dict[str, Any], n: int) -> np.ndarray:
 
 
 def _generate_float(params: dict[str, Any], n: int) -> np.ndarray:
-    """Generate an array of random floats in the range [min, max)."""
+    """Generate an array of random floats — either uniformly within [min, max),
+    or, if 'choices' is given, sampled from a fixed set of values (e.g. coded
+    conventions like Geotab's DiagnosticGearPositionId: 126=Park, 127=Drive,
+    -1=Reverse, 0=Neutral, 1..n=forward gears)."""
+
+    choices = params.get("choices")
+    if choices is not None:
+        if not isinstance(choices, list) or len(choices) == 0:
+            raise ParquetServiceError("'choices' must be a non-empty list of numbers")
+        try:
+            values = [float(v) for v in choices]
+        except (TypeError, ValueError) as exc:
+            raise ParquetServiceError(f"'choices' must contain numbers: {exc}") from exc
+        return np.random.choice(values, size=n)
 
     lo, hi = float(_require(params, "min")), float(_require(params, "max"))
     if lo > hi:
