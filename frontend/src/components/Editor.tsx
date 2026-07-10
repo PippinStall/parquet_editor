@@ -91,6 +91,21 @@ export default function Editor({
   const [deletingColumn, setDeletingColumn] = useState(false);
   const [deletingRow, setDeletingRow] = useState(false);
 
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [confirmLeave, setConfirmLeave] = useState(false);
+
+  // Warn on tab close/refresh — this is a real page unload, so an in-app
+  // dialog can't intercept it; only the browser's native prompt can.
+  useEffect(() => {
+    if (!hasUnsavedChanges) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [hasUnsavedChanges]);
+
   // Debounce the free-text search box so we don't re-query on every keystroke.
   useEffect(() => {
     const t = setTimeout(() => {
@@ -193,6 +208,7 @@ export default function Editor({
     );
     try {
       await patchCell(file.file_id, rowIndex, column, value);
+      setHasUnsavedChanges(true);
       if (showBbox && column === geometryColumn) loadBbox();
     } catch (err) {
       setError(apiErrorMessage(err));
@@ -225,6 +241,7 @@ export default function Editor({
     setError(null);
     try {
       await saveFile(file.file_id);
+      setHasUnsavedChanges(false);
       showToast("File saved to disk.");
     } catch (err) {
       setError(apiErrorMessage(err));
@@ -262,6 +279,7 @@ export default function Editor({
       await loadSchema();
       await loadRows();
       setConfirmDeleteColumn(null);
+      setHasUnsavedChanges(true);
     } catch (err) {
       setError(apiErrorMessage(err));
     } finally {
@@ -284,6 +302,7 @@ export default function Editor({
       });
       await loadRows();
       setConfirmDeleteRow(null);
+      setHasUnsavedChanges(true);
     } catch (err) {
       setError(apiErrorMessage(err));
     } finally {
@@ -305,12 +324,16 @@ export default function Editor({
   return (
     <div>
       <div className="toolbar">
-        <button className="secondary" onClick={onClose}>
+        <button
+          className="secondary"
+          onClick={() => (hasUnsavedChanges ? setConfirmLeave(true) : onClose())}
+        >
           ← Files
         </button>
         <strong>{file.filename}</strong>
         <span className="badge">{file.is_geo ? "geoparquet" : "parquet"}</span>
         <span className="badge">{totalRows} rows</span>
+        {hasUnsavedChanges && <span className="badge">unsaved changes</span>}
         {selected.size > 0 && (
           <span className="badge">selected: {selected.size}</span>
         )}
@@ -491,6 +514,7 @@ export default function Editor({
           onDone={() => {
             setShowGenerate(false);
             showToast("Values updated.");
+            setHasUnsavedChanges(true);
             loadRows();
             if (showBbox) loadBbox();
           }}
@@ -508,6 +532,7 @@ export default function Editor({
           onDone={() => {
             setShowAddColumn(false);
             showToast("Column added.");
+            setHasUnsavedChanges(true);
             loadSchema();
             loadRows();
           }}
@@ -521,6 +546,7 @@ export default function Editor({
           onDone={() => {
             setShowDeleteNullColumns(false);
             showToast("Null columns deleted.");
+            setHasUnsavedChanges(true);
             loadSchema();
             loadRows();
           }}
@@ -538,6 +564,7 @@ export default function Editor({
                 ? `Rounded ${roundedColumns.length} float column(s).`
                 : "No float columns to round.",
             );
+            if (roundedColumns.length > 0) setHasUnsavedChanges(true);
             loadRows();
           }}
         />
@@ -573,6 +600,19 @@ export default function Editor({
           busy={deletingRow}
           onCancel={() => setConfirmDeleteRow(null)}
           onConfirm={confirmDeleteRowNow}
+        />
+      )}
+
+      {confirmLeave && (
+        <ConfirmDialog
+          title="Leave without saving?"
+          message="You have unsaved changes. They won't be written to disk until you click Save. Leave anyway?"
+          confirmLabel="Leave"
+          onCancel={() => setConfirmLeave(false)}
+          onConfirm={() => {
+            setConfirmLeave(false);
+            onClose();
+          }}
         />
       )}
     </div>
