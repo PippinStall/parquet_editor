@@ -6,6 +6,7 @@ that in-memory copy until the user explicitly saves.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 import pandas as pd
 
@@ -20,6 +21,13 @@ class OpenFile:
     crs: str | None
     dirty: bool = False
     kinds: dict[str, str] = field(default_factory=dict)
+    # Original pyarrow type of each "covering"/struct-or-list column carried
+    # forward verbatim from the source file (see _load_dataframe). Round-
+    # tripping such a column through pandas turns it into a plain object
+    # column of Python dicts, whose numeric sub-fields are always 64-bit —
+    # silently widening e.g. a float32 bbox struct field to double on save.
+    # Used to cast those columns back to their original type at write time.
+    extra_column_types: dict[str, Any] = field(default_factory=dict)
     # True if the *original* file on disk encoded any timestamp column as
     # legacy INT96 (the parquet-mr/Spark convention) rather than modern
     # INT64+logical-type. Detected once at open time and used as the default

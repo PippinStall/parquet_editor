@@ -3,11 +3,14 @@ from __future__ import annotations
 import datetime
 import io
 import math
+import tempfile
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 import geopandas as gpd
 from app.helpers.column_types import KIND_GEOMETRY, column_kind
@@ -68,15 +71,39 @@ def _uses_int96_timestamps(path: Path) -> bool:
     )
 
 
+def _struct_or_list_column_types(path: Path) -> dict[str, Any]:
+    """Original pyarrow type of every struct/list-typed column in the raw
+    file. Reading a parquet file into pandas (directly, or via geopandas)
+    converts such columns into plain Python dict/list objects — their numeric
+    sub-fields are always 64-bit as a result, so writing them back out
+    re-infers e.g. a float32 struct field as double. Capturing the original
+    type up front lets save/export undo that widening (see
+    fix_extra_column_types) regardless of whether the column round-trips
+    through pandas untouched or is one geopandas omits entirely (a GeoParquet
+    "covering" bbox struct some writers — notably Spark/Sedona — attach for
+    spatial predicate pushdown, which geopandas silently drops on read).
+    """
+
+    schema = pq.read_schema(path)
+    return {
+        name: schema.field(name).type
+        for name in schema.names
+        if pa.types.is_nested(schema.field(name).type)
+    }
+
+
 def _load_dataframe(
     path: Path,
-) -> tuple[pd.DataFrame, bool, str | None, str | None, bool]:
+) -> tuple[pd.DataFrame, bool, str | None, str | None, bool, dict[str, Any]]:
     """Load a parquet file into a DataFrame, returning the DataFrame,
     whether it's GeoParquet, the geometry column name (if any), the CRS (if
-    any), and whether the file uses legacy INT96 timestamp encoding.
+    any), whether the file uses legacy INT96 timestamp encoding, and the
+    original pyarrow type of any struct/list column (see
+    _struct_or_list_column_types).
     """
 
     uses_int96 = _uses_int96_timestamps(path)
+    extra_column_types = _struct_or_list_column_types(path)
 
     is_geo = _is_geoparquet(path)
     if is_geo:
@@ -85,11 +112,9 @@ def _load_dataframe(
         crs = str(gdf.crs) if gdf.crs is not None else None
 
         # geopandas silently omits columns it recognizes as GeoParquet
-        # "covering" metadata (e.g. a per-row bbox struct some writers —
-        # notably Spark/Sedona — attach for spatial predicate pushdown) from
-        # the returned GeoDataFrame. Left alone, saving would silently drop
-        # that column from the file even though the user never touched it.
-        # Carry any such columns forward verbatim so nothing is lost.
+        # "covering" metadata from the returned GeoDataFrame. Left alone,
+        # saving would silently drop that column even though the user never
+        # touched it — carry any such columns forward verbatim.
         raw_columns = pq.read_schema(path).names
         missing = [c for c in raw_columns if c not in gdf.columns]
         if missing:
@@ -97,11 +122,85 @@ def _load_dataframe(
             for col in missing:
                 gdf[col] = extra[col].values
 
-        return gdf, True, geometry_column, crs, uses_int96
+        return gdf, True, geometry_column, crs, uses_int96, extra_column_types
 
     df = pd.read_parquet(path, engine="pyarrow")
 
-    return df, False, None, None, uses_int96
+    return df, False, None, None, uses_int96, extra_column_types
+
+
+def _cast_back(column: pa.ChunkedArray, target_type: Any) -> pa.ChunkedArray:
+    """Cast a column back to its original type, rebuilding struct types
+    field-by-field (looked up by name) rather than via a plain .cast() —
+    pandas round-tripping a struct column through Python dicts reorders its
+    fields (observed alphabetically), and pyarrow's .cast() requires a
+    struct's field order to match exactly, so it otherwise raises rather
+    than reordering.
+    """
+
+    if not pa.types.is_struct(target_type):
+        return column.cast(target_type)
+
+    chunks = []
+    for chunk in column.chunks:
+        field_arrays = [chunk.field(f.name).cast(f.type) for f in target_type]
+        chunks.append(
+            pa.StructArray.from_arrays(
+                field_arrays, fields=list(target_type), mask=pc.is_null(chunk)
+            )
+        )
+    return pa.chunked_array(chunks, type=target_type)
+
+
+def fix_extra_column_types(
+    path: Path,
+    extra_column_types: dict[str, Any],
+    use_deprecated_int96_timestamps: bool = False,
+) -> None:
+    """Cast "extra" struct/list columns (see _load_dataframe/OpenFile.extra_
+    column_types) in a just-written parquet file back to their original
+    pyarrow type — a cheap second pass, since pandas/geopandas offer no way
+    to override a struct field's physical type on write, and round-tripping
+    through pandas otherwise silently widens e.g. a float32 covering-bbox
+    struct field to double (which breaks schema-strict readers like Spark's
+    vectorized GeoParquet reader when comparing against the original file).
+
+    `use_deprecated_int96_timestamps` must match whatever the file was just
+    written with — this rewrites the whole file via a fresh pq.write_table(),
+    which otherwise defaults to modern INT64 and would silently undo that
+    encoding choice.
+    """
+
+    if not extra_column_types:
+        return
+
+    table = pq.read_table(path)
+    changed = False
+    for col, dtype in extra_column_types.items():
+        if col not in table.column_names:
+            continue
+        idx = table.column_names.index(col)
+        if table.schema.field(idx).type == dtype:
+            continue
+        try:
+            new_col = _cast_back(table.column(idx), dtype)
+        except (
+            pa.ArrowInvalid,
+            pa.ArrowNotImplementedError,
+            pa.ArrowTypeError,
+            KeyError,
+        ):
+            continue
+        table = table.set_column(idx, table.schema.field(idx).with_type(dtype), new_col)
+        changed = True
+
+    if changed:
+        pq.write_table(
+            table,
+            path,
+            compression="snappy",
+            use_deprecated_int96_timestamps=use_deprecated_int96_timestamps,
+        )
 
 
 def open_file(file_id: str) -> OpenFile:
@@ -115,7 +214,9 @@ def open_file(file_id: str) -> OpenFile:
     if record is None:
         raise ParquetServiceError(f"Unknown file_id: {file_id}")
 
-    df, is_geo, geometry_column, crs, uses_int96 = _load_dataframe(record.path)
+    df, is_geo, geometry_column, crs, uses_int96, extra_column_types = _load_dataframe(
+        record.path
+    )
 
     kinds = {
         col: column_kind(df[col], is_geometry_col=(is_geo and col == geometry_column))
@@ -129,6 +230,7 @@ def open_file(file_id: str) -> OpenFile:
         crs=crs,
         kinds=kinds,
         uses_int96_timestamps=uses_int96,
+        extra_column_types=extra_column_types,
     )
     cache.set(file_id, entry)
 
@@ -646,6 +748,8 @@ def save_file(file_id: str, legacy_int96_timestamps: bool | None = None) -> File
             use_deprecated_int96_timestamps=use_int96,
         )
 
+    fix_extra_column_types(record.path, entry.extra_column_types, use_int96)
+
     entry.dirty = False
 
     return record
@@ -678,15 +782,23 @@ def export_file(file_id: str, fmt: str) -> tuple[bytes, str, str]:
         export_df.to_csv(buf, index=False)
         return buf.getvalue().encode("utf-8"), "text/csv", f"{base_name}.csv"
 
-    buf = io.BytesIO()
-    export_df.to_parquet(
-        buf,
-        engine="pyarrow",
-        compression="snappy",
-        use_deprecated_int96_timestamps=entry.uses_int96_timestamps,
-    )
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".parquet") as tmp:
+        tmp_path = Path(tmp.name)
+    try:
+        export_df.to_parquet(
+            tmp_path,
+            engine="pyarrow",
+            compression="snappy",
+            use_deprecated_int96_timestamps=entry.uses_int96_timestamps,
+        )
+        fix_extra_column_types(
+            tmp_path, entry.extra_column_types, entry.uses_int96_timestamps
+        )
+        data = tmp_path.read_bytes()
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
-    return buf.getvalue(), "application/octet-stream", f"{base_name}.parquet"
+    return data, "application/octet-stream", f"{base_name}.parquet"
 
 
 def get_bbox(file_id: str) -> dict[str, float]:

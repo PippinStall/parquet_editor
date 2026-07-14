@@ -13,7 +13,12 @@ from pathlib import Path
 import pandas as pd
 
 from app.helpers.file_store import FileRecord, store
-from app.services.parquet_service import ParquetServiceError, hashable_columns, open_file
+from app.services.parquet_service import (
+    ParquetServiceError,
+    fix_extra_column_types,
+    hashable_columns,
+    open_file,
+)
 
 
 def _coalesce_by_key(df: pd.DataFrame, key_columns: list[str]) -> pd.DataFrame:
@@ -51,6 +56,11 @@ def merge_files(
     # If any source file used legacy INT96 timestamps (the parquet-mr/Spark
     # convention), keep using it for the merged output too — see save_file().
     use_int96 = any(e.uses_int96_timestamps for e in entries)
+    # Union of every source's "extra" struct/list column types (see
+    # fix_extra_column_types) — later entries win on name conflicts.
+    extra_column_types: dict = {}
+    for e in entries:
+        extra_column_types.update(e.extra_column_types)
 
     frames: list[pd.DataFrame] = []
     if is_geo:
@@ -96,11 +106,18 @@ def merge_files(
         tmp_path = Path(tmp.name)
 
     if is_geo:
-        merged.to_parquet(tmp_path, compression="snappy", use_deprecated_int96_timestamps=use_int96)
+        merged.to_parquet(
+            tmp_path, compression="snappy", use_deprecated_int96_timestamps=use_int96
+        )
     else:
         merged.to_parquet(
-            tmp_path, engine="pyarrow", compression="snappy", use_deprecated_int96_timestamps=use_int96
+            tmp_path,
+            engine="pyarrow",
+            compression="snappy",
+            use_deprecated_int96_timestamps=use_int96,
         )
+
+    fix_extra_column_types(tmp_path, extra_column_types, use_int96)
 
     try:
         return store.save_upload(filename, tmp_path)
